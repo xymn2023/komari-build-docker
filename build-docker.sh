@@ -3,6 +3,7 @@
 # Komari项目Docker镜像自动构建脚本
 # 作者: AI Assistant
 # 用途: 按照官方手工构建流程自动拉取、构建和推送komari项目的Docker镜像
+# 系统: Linux (Debian/Ubuntu)
 
 # 颜色定义
 RED='\033[0;31m'
@@ -125,6 +126,9 @@ check_requirements() {
         print_success "Git已安装: $(git --version)"
     fi
     
+    # 检查交叉编译工具
+    check_cross_compile_tools
+    
     # 如果有缺失的工具，自动安装
     if [ "$need_install" = true ]; then
         echo
@@ -138,26 +142,39 @@ check_requirements() {
     check_docker_buildx
 }
 
+# 检查交叉编译工具
+check_cross_compile_tools() {
+    print_info "检查交叉编译工具..."
+    
+    # 检查是否有ARM64交叉编译工具
+    if ! command -v aarch64-linux-gnu-gcc &> /dev/null; then
+        print_warning "ARM64交叉编译工具未安装，正在安装..."
+        install_cross_compile_tools
+    else
+        print_success "ARM64交叉编译工具已安装"
+    fi
+}
+
+# 安装交叉编译工具
+install_cross_compile_tools() {
+    print_info "安装ARM64交叉编译工具..."
+    
+    if command -v apt-get &> /dev/null; then
+        sudo apt-get update -qq
+        sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+        print_success "ARM64交叉编译工具安装完成"
+    else
+        print_warning "无法自动安装交叉编译工具，将禁用CGO进行构建"
+    fi
+}
+
 # 安装缺失的工具
 install_missing_tools() {
     local tools=("$@")
     print_info "开始自动安装缺失的工具..."
     
-    # 检测操作系统
-    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        install_tools_linux "${tools[@]}"
-    elif [[ "$OSTYPE" == "darwin"* ]]; then
-        install_tools_macos "${tools[@]}"
-    elif [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "cygwin" ]] || [[ "$OSTYPE" == "win32" ]]; then
-        install_tools_windows "${tools[@]}"
-    else
-        print_error "不支持的操作系统: $OSTYPE"
-        print_info "请手动安装以下工具:"
-        for tool in "${tools[@]}"; do
-            echo "  - $tool"
-        done
-        return 1
-    fi
+    # 只支持Linux系统
+    install_tools_linux "${tools[@]}"
 }
 
 # Linux系统安装工具
@@ -172,12 +189,26 @@ install_tools_linux() {
             case $tool in
                 "docker")
                     print_info "安装Docker..."
-                    curl -fsSL https://get.docker.com -o get-docker.sh
-                    sudo sh get-docker.sh
+                    # 安装Docker官方GPG密钥
+                    sudo apt-get install -y ca-certificates curl gnupg
+                    sudo install -m 0755 -d /etc/apt/keyrings
+                    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+                    sudo chmod a+r /etc/apt/keyrings/docker.gpg
+                    
+                    # 添加Docker仓库
+                    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+                    
+                    # 安装Docker
+                    sudo apt-get update -qq
+                    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+                    
+                    # 添加用户到docker组
                     sudo usermod -aG docker $USER
-                    rm get-docker.sh
+                    
+                    # 启动Docker服务
                     sudo systemctl start docker
                     sudo systemctl enable docker
+                    
                     print_success "Docker安装完成"
                     ;;
                 "nodejs")
@@ -192,8 +223,19 @@ install_tools_linux() {
                     wget -q https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
                     sudo rm -rf /usr/local/go
                     sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
-                    echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+                    
+                    # 设置环境变量
+                    if ! grep -q '/usr/local/go/bin' ~/.bashrc; then
+                        echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+                    fi
+                    
+                    if ! grep -q '/usr/local/go/bin' ~/.profile; then
+                        echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.profile
+                    fi
+                    
+                    # 立即应用到当前会话
                     export PATH=$PATH:/usr/local/go/bin
+                    
                     rm go${GO_VERSION}.linux-amd64.tar.gz
                     print_success "Go安装完成"
                     ;;
@@ -204,103 +246,12 @@ install_tools_linux() {
                     ;;
             esac
         done
-    elif command -v yum &> /dev/null; then
-        print_info "使用yum安装工具..."
-        for tool in "${tools[@]}"; do
-            case $tool in
-                "docker")
-                    sudo yum install -y docker
-                    sudo systemctl start docker
-                    sudo systemctl enable docker
-                    sudo usermod -aG docker $USER
-                    ;;
-                "nodejs")
-                    curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -
-                    sudo yum install -y nodejs
-                    ;;
-                "golang")
-                    GO_VERSION="1.21.5"
-                    wget -q https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
-                    sudo rm -rf /usr/local/go
-                    sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
-                    echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
-                    export PATH=$PATH:/usr/local/go/bin
-                    rm go${GO_VERSION}.linux-amd64.tar.gz
-                    ;;
-                "git")
-                    sudo yum install -y git
-                    ;;
-            esac
-        done
-    fi
-}
-
-# macOS系统安装工具
-install_tools_macos() {
-    local tools=("$@")
-    
-    # 检查Homebrew
-    if ! command -v brew &> /dev/null; then
-        print_info "安装Homebrew..."
-        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    else
+        print_error "不支持的Linux发行版，请手动安装必要工具"
+        return 1
     fi
     
-    for tool in "${tools[@]}"; do
-        case $tool in
-            "docker")
-                brew install --cask docker
-                ;;
-            "nodejs")
-                brew install node@20
-                ;;
-            "golang")
-                brew install go
-                ;;
-            "git")
-                brew install git
-                ;;
-        esac
-    done
-}
-
-# Windows系统安装工具
-install_tools_windows() {
-    local tools=("$@")
-    
-    print_info "Windows系统检测到，尝试使用winget安装..."
-    
-    for tool in "${tools[@]}"; do
-        case $tool in
-            "docker")
-                if command -v winget &> /dev/null; then
-                    winget install Docker.DockerDesktop
-                else
-                    print_warning "请手动安装Docker Desktop"
-                fi
-                ;;
-            "nodejs")
-                if command -v winget &> /dev/null; then
-                    winget install OpenJS.NodeJS.LTS
-                else
-                    print_warning "请手动安装Node.js 20+"
-                fi
-                ;;
-            "golang")
-                if command -v winget &> /dev/null; then
-                    winget install GoLang.Go
-                else
-                    print_warning "请手动安装Go 1.18+"
-                fi
-                ;;
-            "git")
-                if command -v winget &> /dev/null; then
-                    winget install Git.Git
-                else
-                    print_warning "请手动安装Git"
-                fi
-                ;;
-        esac
-    done
+    print_success "所有工具安装完成"
 }
 
 # 检查Docker Buildx
@@ -382,7 +333,7 @@ build_frontend() {
     return 0
 }
 
-# 步骤2: 构建后端（按照官方文档）
+# 步骤2: 构建后端（按照官方文档，修复交叉编译问题）
 build_backend() {
     print_info "=== 步骤2: 构建后端 ==="
     
@@ -450,20 +401,38 @@ build_backend() {
     
     # 构建linux/amd64二进制文件
     print_info "构建 linux/amd64 二进制文件..."
-    if GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-amd64; then
+    if GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-amd64; then
         print_success "linux/amd64 二进制文件构建成功"
     else
         print_error "linux/amd64 二进制文件构建失败"
         return 1
     fi
     
-    # 构建linux/arm64二进制文件
+    # 构建linux/arm64二进制文件（修复交叉编译问题）
     print_info "构建 linux/arm64 二进制文件..."
-    if GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-arm64; then
-        print_success "linux/arm64 二进制文件构建成功"
+    
+    # 检查是否有ARM64交叉编译工具
+    if command -v aarch64-linux-gnu-gcc &> /dev/null; then
+        print_info "使用交叉编译工具构建ARM64二进制文件..."
+        if GOOS=linux GOARCH=arm64 CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc CXX=aarch64-linux-gnu-g++ go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-arm64; then
+            print_success "linux/arm64 二进制文件构建成功（交叉编译）"
+        else
+            print_warning "交叉编译失败，尝试禁用CGO构建..."
+            if GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-arm64; then
+                print_success "linux/arm64 二进制文件构建成功（禁用CGO）"
+            else
+                print_error "linux/arm64 二进制文件构建失败"
+                return 1
+            fi
+        fi
     else
-        print_error "linux/arm64 二进制文件构建失败"
-        return 1
+        print_info "未找到交叉编译工具，禁用CGO构建ARM64二进制文件..."
+        if GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-arm64; then
+            print_success "linux/arm64 二进制文件构建成功（禁用CGO）"
+        else
+            print_error "linux/arm64 二进制文件构建失败"
+            return 1
+        fi
     fi
     
     # 验证二进制文件
@@ -835,7 +804,7 @@ cleanup() {
 # 显示菜单
 show_menu() {
     echo
-    echo -e "${BLUE}=== Komari Docker 镜像构建脚本 (官方手工构建流程) ===${NC}"
+    echo -e "${BLUE}=== Komari Docker 镜像构建脚本 (Linux优化版) ===${NC}"
     echo -e "${YELLOW}工作目录: $WORK_DIR${NC}"
     if [ -n "$DOCKER_USERNAME" ] && [ -n "$IMAGE_NAME" ] && [ -n "$IMAGE_TAG" ]; then
         echo -e "${YELLOW}当前配置: $FULL_IMAGE_NAME${NC}"
@@ -858,8 +827,8 @@ show_menu() {
 
 # 主函数
 main() {
-    echo -e "${GREEN}欢迎使用 Komari Docker 镜像自动构建脚本!${NC}"
-    echo -e "${BLUE}此脚本严格按照官方README.md中的手工构建流程执行${NC}"
+    echo -e "${GREEN}欢迎使用 Komari Docker 镜像自动构建脚本 (Linux优化版)!${NC}"
+    echo -e "${BLUE}此脚本专为Linux系统优化，解决了ARM64交叉编译问题${NC}"
     echo -e "${BLUE}构建流程: 前端静态文件 → 后端项目 → 复制静态文件 → 构建二进制 → Docker镜像${NC}"
     echo
     
