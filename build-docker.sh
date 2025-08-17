@@ -77,71 +77,31 @@ trap cleanup_on_exit EXIT
 # 设置中断信号的清理陷阱
 trap 'echo; print_warning "检测到中断信号，正在清理..."; cleanup_on_exit; exit 130' INT TERM
 
-# 从GitHub API获取官方最新版本信息 - 修复版本
+# 从GitHub API获取官方最新版本信息
 get_official_version_info() {
-    print_info "从GitHub API获取官方最新版本信息..."
-    
     # 先获取最新release的tag名称
     local latest_api="https://api.github.com/repos/komari-monitor/komari/releases/latest"
-    print_debug "调用API: $latest_api"
-    
-    local api_response=$(curl -s "$latest_api")
-    if [ $? -ne 0 ] || [ -z "$api_response" ]; then
-        print_error "无法连接到GitHub API，请检查网络连接"
-        return 1
-    fi
-    
-    print_debug "API响应长度: ${#api_response} 字符"
-    
-    local tag_name=$(echo "$api_response" | grep '"tag_name":' | sed -E 's/.*"tag_name":\s*"([^"]+)".*/\1/' | head -1)
+    local tag_name=$(curl -s "$latest_api" | grep '"tag_name":' | sed -E 's/.*"tag_name":\s*"([^"]+)".*/\1/' | head -1)
     
     if [ -z "$tag_name" ] || [ "$tag_name" = "null" ]; then
-        print_error "无法从GitHub API解析版本标签"
-        print_debug "API响应片段: $(echo "$api_response" | head -5)"
+        print_error "无法从GitHub API获取版本信息，请检查网络连接"
         return 1
     fi
-    
-    print_debug "解析到的tag: '$tag_name'"
     
     # 使用Tags API获取该tag对应的提交哈希
     local tags_api="https://api.github.com/repos/komari-monitor/komari/git/refs/tags/${tag_name}"
-    print_debug "调用Tags API: $tags_api"
-    
-    local tags_response=$(curl -s "$tags_api")
-    if [ $? -ne 0 ] || [ -z "$tags_response" ]; then
-        print_error "无法获取标签信息，请检查网络连接"
-        return 1
-    fi
-    
-    print_debug "Tags API响应长度: ${#tags_response} 字符"
-    
-    local commit_sha=$(echo "$tags_response" | grep '"sha":' | head -1 | sed -E 's/.*"sha":\s*"([^"]+)".*/\1/')
+    local commit_sha=$(curl -s "$tags_api" | grep '"sha":' | head -1 | sed -E 's/.*"sha":\s*"([^"]+)".*/\1/')
     
     if [ -z "$commit_sha" ] || [ "$commit_sha" = "null" ]; then
-        print_error "无法从GitHub API解析提交哈希"
-        print_debug "Tags API响应片段: $(echo "$tags_response" | head -5)"
+        print_error "无法从GitHub API获取提交哈希，请检查网络连接"
         return 1
     fi
-    
-    print_debug "解析到的完整SHA: '$commit_sha'"
     
     # 清理版本号和截取哈希
     local clean_version=$(echo "$tag_name" | sed 's/^v//')
     local short_hash=$(echo "$commit_sha" | cut -c1-7)
     
-    # 验证数据完整性
-    if [ -z "$clean_version" ] || [ -z "$short_hash" ] || [ ${#short_hash} -ne 7 ]; then
-        print_error "版本信息解析失败"
-        print_debug "  清理后版本: '$clean_version'"
-        print_debug "  短哈希: '$short_hash' (长度: ${#short_hash})"
-        return 1
-    fi
-    
-    print_success "获取官方版本信息成功:"
-    print_debug "  官方版本: '$clean_version'"
-    print_debug "  官方哈希: '$short_hash'"
-    
-    # 返回版本号和哈希（空格分隔）
+    # 直接返回版本号和哈希（空格分隔）
     echo "$clean_version $short_hash"
     return 0
 }
@@ -149,7 +109,6 @@ get_official_version_info() {
 init_work_directory() {
     print_info "初始化工作目录..."
     WORK_DIR="$(pwd)"
-    print_debug "工作目录: $WORK_DIR"
     
     if [ ! -w "$WORK_DIR" ]; then
         print_error "当前目录没有写权限: $WORK_DIR"
@@ -449,7 +408,7 @@ build_backend() {
         return 1
     fi
     
-    # 动态获取官方版本信息 - 增强版本
+    # 动态获取官方版本信息
     print_info "动态获取官方版本信息..."
     local version_info=$(get_official_version_info)
     local get_version_result=$?
@@ -460,31 +419,20 @@ build_backend() {
         return 1
     fi
     
-    # 解析版本信息 - 增强解析
-    local official_version=$(echo "$version_info" | awk '{print $1}' | tr -d '\n\r')
-    local official_hash=$(echo "$version_info" | awk '{print $2}' | tr -d '\n\r')
+    # 解析版本信息
+    local official_version=$(echo "$version_info" | awk '{print $1}')
+    local official_hash=$(echo "$version_info" | awk '{print $2}')
     
-    print_debug "原始版本信息: '$version_info'"
-    print_debug "解析后版本: '$official_version'"
-    print_debug "解析后哈希: '$official_hash'"
-    
-    # 严格验证获取到的数据
+    # 验证获取到的数据
     if [ -z "$official_version" ] || [ -z "$official_hash" ]; then
         print_error "获取到的版本信息不完整，构建终止"
-        print_error "版本号: '$official_version' (长度: ${#official_version})"
-        print_error "哈希值: '$official_hash' (长度: ${#official_hash})"
+        print_error "版本号: '$official_version', 哈希: '$official_hash'"
         return 1
     fi
     
-    # 验证哈希值格式
+    # 验证哈希长度
     if [ ${#official_hash} -ne 7 ]; then
         print_error "哈希值长度不正确: '$official_hash' (期望7位，实际${#official_hash}位)"
-        return 1
-    fi
-    
-    # 验证哈希值只包含有效字符
-    if ! echo "$official_hash" | grep -qE '^[a-f0-9]{7}$'; then
-        print_error "哈希值格式不正确: '$official_hash' (应为7位十六进制)"
         return 1
     fi
     
@@ -492,36 +440,20 @@ build_backend() {
     local current_hash=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
     local current_full_hash=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
     
-    print_debug "当前代码信息: 短哈希='$current_hash', 完整哈希='$current_full_hash'"
-    
     # 使用动态获取的官方版本号和官方哈希值进行版本注入
     local display_version="$official_version"  # 网页显示的版本号
     local display_hash="$official_hash"        # 网页显示的哈希值
     
     print_info "版本信息汇总:"
-    print_info "  动态获取的官方版本: $official_version"
-    print_info "  动态获取的官方哈希: $official_hash"
+    print_info "  动态获取的官方版本: $official_version ($official_hash)"
     print_info "  当前构建代码: $current_hash"
-    print_info "  网页将显示: $display_version ($display_hash)"
-    print_info "  构建基于: 当前代码 $current_full_hash"
+    print_info "  网页将显示版本: $display_version ($display_hash)"
     
     local module_name=$(grep '^module' go.mod | awk '{print $2}')
-    print_debug "Go模块名: $module_name"
-    
-    # 检查Go环境
-    print_debug "Go环境检查:"
-    print_debug "  Go版本: $(go version)"
-    print_debug "  GOPATH: $(go env GOPATH)"
-    print_debug "  GOROOT: $(go env GOROOT)"
-    print_debug "  CGO_ENABLED: $(go env CGO_ENABLED)"
     
     # 版本注入：使用动态获取的官方版本号和官方哈希值
     local version_flag="${module_name}/utils.CurrentVersion=${display_version}"
     local hash_flag="${module_name}/utils.VersionHash=${display_hash}"
-    
-    print_debug "LDFLAGS组件:"
-    print_debug "  版本标志: '$version_flag'"
-    print_debug "  哈希标志: '$hash_flag'"
     
     print_info "开始编译过程..."
     
@@ -529,11 +461,6 @@ build_backend() {
     export CGO_ENABLED=1
     export GOOS=linux
     export GOARCH=amd64
-    
-    print_debug "编译环境变量:"
-    print_debug "  CGO_ENABLED=$CGO_ENABLED"
-    print_debug "  GOOS=$GOOS"
-    print_debug "  GOARCH=$GOARCH"
     
     # 先进行基础编译测试
     print_info "执行基础编译测试..."
@@ -549,7 +476,6 @@ build_backend() {
             
             # 执行完整编译
             print_info "执行完整编译（包含动态获取的官方版本信息）..."
-            print_debug "执行命令: go build -trimpath -ldflags=\"-s -w -X '$version_flag' -X '$hash_flag'\" -o komari-linux-amd64"
             
             if go build -trimpath -ldflags="-s -w -X '$version_flag' -X '$hash_flag'" -o komari-linux-amd64; then
                 print_success "完整编译成功（包含动态获取的官方版本信息）"
@@ -578,8 +504,6 @@ build_backend() {
         fi
     else
         print_error "基础编译测试失败，请检查Go环境和项目代码"
-        print_debug "尝试显示编译错误:"
-        go build -o komari-test-debug 2>&1 | head -20
         return 1
     fi
     
@@ -588,11 +512,6 @@ build_backend() {
         print_success "后端二进制文件构建完成"
         print_info "生成的文件信息:"
         ls -la komari-linux-amd64
-        
-        # 检查文件类型
-        if command -v file &> /dev/null; then
-            print_debug "文件类型: $(file komari-linux-amd64)"
-        fi
         
         # 尝试获取版本信息
         print_info "尝试验证版本信息..."
@@ -606,7 +525,6 @@ build_backend() {
         print_info "  网页显示版本: $display_version ($display_hash)"
         print_info "  基于官方版本: $official_version"
         print_info "  版本信息来源: 动态从GitHub API获取"
-        print_info "  CGO已启用，支持SQLite数据库"
         print_info "  目标架构: linux/amd64"
         
         return 0
@@ -855,7 +773,6 @@ EOF
         print_info "访问地址: http://localhost:25774"
         print_info "管理员账号: admin / admin123"
         print_warning "请在首次登录后及时修改密码以确保安全！"
-        print_info "架构信息: AMD64架构，CGO启用，动态获取官方版本标识"
         return 0
     else
         print_error "docker-compose.yml文件生成失败"
@@ -947,7 +864,6 @@ get_image_info() {
     echo -e "  镜像标签: ${GREEN}$IMAGE_TAG${NC}"
     echo -e "  完整镜像名: ${GREEN}$FULL_IMAGE_NAME${NC}"
     echo -e "  目标架构: ${GREEN}linux/amd64${NC}"
-    echo -e "  编译方式: ${GREEN}CGO启用（支持SQLite）+ 动态获取官方版本标识${NC}"
     echo
     
     print_info "信息是否正确? (y/n)"
@@ -1106,10 +1022,8 @@ cleanup() {
 
 show_menu() {
     echo
-    echo -e "${BLUE}=== Komari Docker 镜像构建脚本 (AMD64架构专用 + 动态获取官方版本标识 + 自动清理 + 调试增强) ===${NC}"
+    echo -e "${BLUE}=== Komari Docker 镜像构建脚本 ===${NC}"
     echo -e "${YELLOW}工作目录: $WORK_DIR${NC}"
-    echo -e "${YELLOW}目标架构: linux/amd64 (CGO启用 + 动态获取官方版本标识)${NC}"
-    echo -e "${YELLOW}构建器管理: 自动创建和清理 $BUILDX_BUILDER${NC}"
     if [ -n "$DOCKER_USERNAME" ] && [ -n "$IMAGE_NAME" ] && [ -n "$IMAGE_TAG" ]; then
         echo -e "${YELLOW}当前配置: $FULL_IMAGE_NAME${NC}"
     else
@@ -1117,10 +1031,10 @@ show_menu() {
     fi
     echo
     echo "请选择操作:"
-    echo "1) 完整构建流程 (推荐) - 按照官方手工构建步骤 + 动态获取官方版本标识"
+    echo "1) 完整构建流程 (推荐)"
     echo "2) 配置镜像信息"
     echo "3) 仅构建前端静态文件"
-    echo "4) 仅构建后端 (包含动态获取官方版本标识 + 调试信息)"
+    echo "4) 仅构建后端"
     echo "5) 仅构建Docker镜像 (本地)"
     echo "6) 构建并推送Docker镜像"
     echo "7) 仅推送到Docker Hub"
@@ -1133,12 +1047,7 @@ show_menu() {
 }
 
 main() {
-    echo -e "${GREEN}欢迎使用 Komari Docker 镜像自动构建脚本 (AMD64架构专用 + 动态获取官方版本标识 + 自动清理 + 调试增强)!${NC}"
-    echo -e "${BLUE}此脚本专门为AMD64/x86_64架构优化，启用CGO支持SQLite数据库${NC}"
-    echo -e "${BLUE}新增功能: 动态从GitHub API获取最新官方版本号，网页显示实时官方版本标识${NC}"
-    echo -e "${BLUE}构建器管理: 脚本启动时创建，退出时自动清理 $BUILDX_BUILDER${NC}"
-    echo -e "${BLUE}调试增强: 详细的编译过程调试信息，多重编译回退机制${NC}"
-    echo -e "${BLUE}构建流程: 前端静态文件 → 后端项目 → 复制静态文件 → CGO编译二进制 → Docker镜像 → Docker Compose${NC}"
+    echo -e "${GREEN}欢迎使用 Komari Docker 镜像构建脚本!${NC}"
     echo
     
     if ! init_work_directory; then
@@ -1155,7 +1064,7 @@ main() {
         
         case $choice in
             1)
-                print_info "开始完整构建流程（按照官方手工构建步骤 + 动态获取官方版本标识 + 调试增强）..."
+                print_info "开始完整构建流程..."
                 
                 if [ -z "$DOCKER_USERNAME" ] || [ -z "$IMAGE_NAME" ] || [ -z "$IMAGE_TAG" ]; then
                     get_image_info
@@ -1244,7 +1153,7 @@ main() {
                 fi
                 ;;
             10)
-               if [ -z "$DOCKER_USERNAME" ] || [ -z "$IMAGE_NAME" ] || [ -z "$IMAGE_TAG" ]; then
+                if [ -z "$DOCKER_USERNAME" ] || [ -z "$IMAGE_NAME" ] || [ -z "$IMAGE_TAG" ]; then
                     get_image_info
                 fi
                 if generate_docker_compose; then
