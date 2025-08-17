@@ -116,26 +116,6 @@ get_official_version_info() {
     return 0
 }
 
-# 生成自定义版本标识
-generate_custom_version() {
-    local official_version="$1"
-    local official_hash="$2"
-    local current_hash="$3"
-    
-    print_debug "版本生成参数: 官方=$official_version, 官方哈希=$official_hash, 当前哈希=$current_hash"
-    
-    # 检查当前代码是否与官方版本一致
-    if [ "$current_hash" = "$official_hash" ]; then
-        # 如果哈希一致，直接使用官方版本号
-        echo "$official_version"
-        print_info "当前代码与官方版本一致，使用官方版本号"
-    else
-        # 如果哈希不一致，生成自定义版本标识
-        echo "${official_version}-custom-${current_hash}"
-        print_info "当前代码基于官方版本的自定义修改"
-    fi
-}
-
 init_work_directory() {
     print_info "初始化工作目录..."
     WORK_DIR="$(pwd)"
@@ -447,20 +427,21 @@ build_backend() {
     
     print_debug "解析版本信息: '$version_info' -> 版本='$official_version', 哈希='$official_hash'"
     
-    # 获取当前代码信息
+    # 获取当前代码信息（仅用于构建日志）
     local current_hash=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
     local current_full_hash=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
     
     print_debug "当前代码信息: 短哈希='$current_hash', 完整哈希='$current_full_hash'"
     
-    # 生成版本标识
-    local custom_version=$(generate_custom_version "$official_version" "$official_hash" "$current_hash")
+    # 关键修改：使用官方版本号和官方哈希值进行版本注入
+    local display_version="$official_version"  # 网页显示的版本号
+    local display_hash="$official_hash"        # 网页显示的哈希值
     
     print_info "版本信息汇总:"
     print_info "  官方版本: $official_version ($official_hash)"
     print_info "  当前代码: $current_hash"
-    print_info "  自定义版本标识: $custom_version"
-    print_info "  完整哈希: $current_full_hash"
+    print_info "  网页显示版本: $display_version ($display_hash)"
+    print_info "  构建基于: 当前代码 $current_full_hash"
     
     local module_name=$(grep '^module' go.mod | awk '{print $2}')
     print_debug "Go模块名: $module_name"
@@ -472,18 +453,13 @@ build_backend() {
     print_debug "  GOROOT: $(go env GOROOT)"
     print_debug "  CGO_ENABLED: $(go env CGO_ENABLED)"
     
-    # 关键修复：网页显示使用官方版本格式，而不是自定义版本
-    # 网页底部显示格式：1.0.5-fix1 (db3f31a)
-    local web_version="$official_version"  # 使用官方版本号
-    local web_hash="$official_hash"        # 使用官方哈希
+    # 修复版本注入：使用官方版本号和官方哈希值
+    local version_flag="${module_name}/utils.CurrentVersion=${display_version}"
+    local hash_flag="${module_name}/utils.VersionHash=${display_hash}"
     
-    local version_flag="${module_name}/utils.CurrentVersion=${web_version}"
-    local hash_flag="${module_name}/utils.VersionHash=${web_hash}"
-    
-    print_debug "网页版本信息注入:"
+    print_debug "LDFLAGS组件:"
     print_debug "  版本标志: $version_flag"
     print_debug "  哈希标志: $hash_flag"
-    print_info "网页将显示: $web_version ($web_hash)"
     
     print_info "开始编译过程..."
     
@@ -510,11 +486,11 @@ build_backend() {
             rm -f komari-test-simple
             
             # 执行完整编译
-            print_info "执行完整编译（包含版本信息）..."
+            print_info "执行完整编译（包含官方版本信息）..."
             print_debug "执行命令: go build -trimpath -ldflags=\"-s -w -X '$version_flag' -X '$hash_flag'\" -o komari-linux-amd64"
             
             if go build -trimpath -ldflags="-s -w -X '$version_flag' -X '$hash_flag'" -o komari-linux-amd64; then
-                print_success "完整编译成功（包含版本信息）"
+                print_success "完整编译成功（包含官方版本信息）"
             else
                 print_warning "完整编译失败，尝试不带trimpath..."
                 if go build -ldflags="-s -w -X '$version_flag' -X '$hash_flag'" -o komari-linux-amd64; then
@@ -565,8 +541,7 @@ build_backend() {
         fi
         
         print_info "编译总结:"
-        print_info "  网页显示版本: $web_version ($web_hash)"
-        print_info "  自定义版本标识: $custom_version"
+        print_info "  网页显示版本: $display_version ($display_hash)"
         print_info "  基于官方版本: $official_version"
         print_info "  CGO已启用，支持SQLite数据库"
         print_info "  目标架构: linux/amd64"
@@ -817,7 +792,7 @@ EOF
         print_info "访问地址: http://localhost:25774"
         print_info "管理员账号: admin / admin123"
         print_warning "请在首次登录后及时修改密码以确保安全！"
-        print_info "架构信息: AMD64架构，CGO启用，网页显示官方版本格式"
+        print_info "架构信息: AMD64架构，CGO启用，显示官方版本标识"
         return 0
     else
         print_error "docker-compose.yml文件生成失败"
@@ -1072,7 +1047,6 @@ show_menu() {
     echo -e "${YELLOW}工作目录: $WORK_DIR${NC}"
     echo -e "${YELLOW}目标架构: linux/amd64 (CGO启用 + 官方版本标识)${NC}"
     echo -e "${YELLOW}构建器管理: 自动创建和清理 $BUILDX_BUILDER${NC}"
-    echo -e "${YELLOW}版本显示: 网页底部显示官方版本格式 (如: 1.0.5-fix1 (db3f31a))${NC}"
     if [ -n "$DOCKER_USERNAME" ] && [ -n "$IMAGE_NAME" ] && [ -n "$IMAGE_TAG" ]; then
         echo -e "${YELLOW}当前配置: $FULL_IMAGE_NAME${NC}"
     else
@@ -1098,10 +1072,9 @@ show_menu() {
 main() {
     echo -e "${GREEN}欢迎使用 Komari Docker 镜像自动构建脚本 (AMD64架构专用 + 官方版本标识 + 自动清理 + 调试增强)!${NC}"
     echo -e "${BLUE}此脚本专门为AMD64/x86_64架构优化，启用CGO支持SQLite数据库${NC}"
-    echo -e "${BLUE}新增功能: 自动获取官方版本号，生成基于官方版本的自定义标识${NC}"
+    echo -e "${BLUE}新增功能: 自动获取官方版本号，网页显示官方版本标识${NC}"
     echo -e "${BLUE}构建器管理: 脚本启动时创建，退出时自动清理 $BUILDX_BUILDER${NC}"
     echo -e "${BLUE}调试增强: 详细的编译过程调试信息，多重编译回退机制${NC}"
-    echo -e "${BLUE}版本显示: 网页底部显示官方版本格式，如 1.0.5-fix1 (db3f31a)${NC}"
     echo -e "${BLUE}构建流程: 前端静态文件 → 后端项目 → 复制静态文件 → CGO编译二进制 → Docker镜像 → Docker Compose${NC}"
     echo
     
