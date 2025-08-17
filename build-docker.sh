@@ -34,6 +34,63 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# 从GitHub API获取官方最新版本信息
+get_official_version_info() {
+    print_info "从GitHub API获取官方最新版本信息..."
+    
+    # 先获取最新release的tag名称
+    local latest_api="https://api.github.com/repos/komari-monitor/komari/releases/latest"
+    local tag_name=$(curl -s "$latest_api" | grep '"tag_name":' | sed -E 's/.*"tag_name":\s*"([^"]+)".*/\1/' | head -1)
+    
+    if [ -z "$tag_name" ] || [ "$tag_name" = "null" ]; then
+        print_warning "无法从API获取tag名称，使用默认版本"
+        echo "1.0.5-fix1 db3f31a"
+        return 1
+    fi
+    
+    print_info "获取到官方tag: $tag_name"
+    
+    # 使用Tags API获取该tag对应的提交哈希
+    local tags_api="https://api.github.com/repos/komari-monitor/komari/git/refs/tags/${tag_name}"
+    local commit_sha=$(curl -s "$tags_api" | grep '"sha":' | head -1 | sed -E 's/.*"sha":\s*"([^"]+)".*/\1/')
+    
+    if [ -z "$commit_sha" ] || [ "$commit_sha" = "null" ]; then
+        print_warning "无法获取提交哈希，使用默认值"
+        echo "1.0.5-fix1 db3f31a"
+        return 1
+    fi
+    
+    # 清理版本号和截取哈希
+    local clean_version=$(echo "$tag_name" | sed 's/^v//')
+    local short_hash=$(echo "$commit_sha" | cut -c1-7)
+    
+    print_success "获取官方版本信息成功:"
+    print_info "  官方版本: $clean_version"
+    print_info "  官方哈希: $short_hash"
+    
+    # 返回版本号和哈希（空格分隔）
+    echo "$clean_version $short_hash"
+    return 0
+}
+
+# 生成自定义版本标识
+generate_custom_version() {
+    local official_version="$1"
+    local official_hash="$2"
+    local current_hash="$3"
+    
+    # 检查当前代码是否与官方版本一致
+    if [ "$current_hash" = "$official_hash" ]; then
+        # 如果哈希一致，直接使用官方版本号
+        echo "$official_version"
+        print_info "当前代码与官方版本一致，使用官方版本号"
+    else
+        # 如果哈希不一致，生成自定义版本标识
+        echo "${official_version}-custom-${current_hash}"
+        print_info "当前代码基于官方版本的自定义修改"
+    fi
+}
+
 init_work_directory() {
     print_info "初始化工作目录..."
     WORK_DIR="$(pwd)"
@@ -311,7 +368,7 @@ build_frontend() {
 }
 
 build_backend() {
-    print_info "=== 步骤2: 构建后端 (AMD64架构，CGO启用) ==="
+    print_info "=== 步骤2: 构建后端 (AMD64架构，CGO启用，官方版本标识) ==="
     
     cd "$WORK_DIR" || {
         print_error "无法切换到工作目录: $WORK_DIR"
@@ -356,16 +413,35 @@ build_backend() {
         return 1
     fi
     
-    VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-    VERSION_HASH=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+    # 获取官方版本信息
+    print_info "获取官方版本信息..."
+    local version_info=$(get_official_version_info)
+    local official_version=$(echo "$version_info" | awk '{print $1}')
+    local official_hash=$(echo "$version_info" | awk '{print $2}')
     
-    MODULE_NAME=$(grep '^module' go.mod | awk '{print $2}')
-    print_info "Go模块: $MODULE_NAME"
+    # 获取当前代码信息
+    local current_hash=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+    local current_full_hash=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
     
-    LDFLAGS="-s -w -X ${MODULE_NAME}/utils.CurrentVersion=${VERSION} -X ${MODULE_NAME}/utils.VersionHash=${VERSION_HASH}"
+    # 生成版本标识
+    local version=$(generate_custom_version "$official_version" "$official_hash" "$current_hash")
+    
+    print_info "版本信息汇总:"
+    print_info "  官方版本: $official_version ($official_hash)"
+    print_info "  当前代码: $current_hash"
+    print_info "  最终版本标识: $version"
+    print_info "  完整哈希: $current_full_hash"
+    
+    local module_name=$(grep '^module' go.mod | awk '{print $2}')
+    print_info "Go模块: $module_name"
+    
+    # 注入版本信息到二进制文件
+    local ldflags="-s -w -X ${module_name}/utils.CurrentVersion=${version} -X ${module_name}/utils.VersionHash=${current_full_hash}"
     
     print_info "构建 linux/amd64 二进制文件（启用CGO支持SQLite）..."
-    if CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-amd64; then
+    print_info "版本标识将显示为: $version ($current_hash)"
+    
+    if CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$ldflags" -o komari-linux-amd64; then
         print_success "linux/amd64 二进制文件构建成功（CGO启用）"
     else
         print_error "linux/amd64 二进制文件构建失败"
@@ -376,6 +452,8 @@ build_backend() {
         print_success "后端二进制文件构建完成"
         print_info "生成的文件:"
         ls -la komari-linux-amd64
+        print_info "版本标识: $version"
+        print_info "基于官方版本: $official_version"
         print_info "CGO已启用，支持SQLite数据库"
         return 0
     else
@@ -384,7 +462,6 @@ build_backend() {
     fi
 }
 
-# 创建新的Dockerfile
 create_dockerfile() {
     print_info "创建兼容glibc的Dockerfile..."
     
@@ -398,17 +475,14 @@ FROM debian:bookworm-slim
 
 WORKDIR /app
 
-# 安装运行时依赖
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-# 复制二进制文件
 COPY komari-linux-amd64 /app/komari
 RUN chmod +x /app/komari
 
-# 环境变量
 ENV GIN_MODE=release
 ENV KOMARI_DB_TYPE=sqlite
 ENV KOMARI_DB_FILE=/app/data/komari.db
@@ -435,7 +509,6 @@ build_docker_image_local() {
         return 1
     }
     
-    # 创建新的Dockerfile
     create_dockerfile
     
     if [ ! -f "komari-linux-amd64" ]; then
@@ -478,7 +551,6 @@ build_docker_image() {
         return 1
     }
     
-    # 创建新的Dockerfile
     create_dockerfile
     
     if [ ! -f "komari-linux-amd64" ]; then
@@ -629,7 +701,7 @@ EOF
         print_info "访问地址: http://localhost:25774"
         print_info "管理员账号: komari233 / Fcx331fcx331"
         print_warning "请在首次登录后及时修改密码以确保安全！"
-        print_info "架构信息: AMD64架构，CGO启用，支持SQLite数据库"
+        print_info "架构信息: AMD64架构，CGO启用，基于官方版本标识"
         return 0
     else
         print_error "docker-compose.yml文件生成失败"
@@ -721,7 +793,7 @@ get_image_info() {
     echo -e "  镜像标签: ${GREEN}$IMAGE_TAG${NC}"
     echo -e "  完整镜像名: ${GREEN}$FULL_IMAGE_NAME${NC}"
     echo -e "  目标架构: ${GREEN}linux/amd64${NC}"
-    echo -e "  编译方式: ${GREEN}CGO启用（支持SQLite）${NC}"
+    echo -e "  编译方式: ${GREEN}CGO启用（支持SQLite）+ 官方版本标识${NC}"
     echo
     
     print_info "信息是否正确? (y/n)"
@@ -880,9 +952,9 @@ cleanup() {
 
 show_menu() {
     echo
-    echo -e "${BLUE}=== Komari Docker 镜像构建脚本 (AMD64架构专用 + SQLite支持) ===${NC}"
+    echo -e "${BLUE}=== Komari Docker 镜像构建脚本 (AMD64架构专用 + 官方版本标识) ===${NC}"
     echo -e "${YELLOW}工作目录: $WORK_DIR${NC}"
-    echo -e "${YELLOW}目标架构: linux/amd64 (CGO启用)${NC}"
+    echo -e "${YELLOW}目标架构: linux/amd64 (CGO启用 + 官方版本标识)${NC}"
     if [ -n "$DOCKER_USERNAME" ] && [ -n "$IMAGE_NAME" ] && [ -n "$IMAGE_TAG" ]; then
         echo -e "${YELLOW}当前配置: $FULL_IMAGE_NAME${NC}"
     else
@@ -890,10 +962,10 @@ show_menu() {
     fi
     echo
     echo "请选择操作:"
-    echo "1) 完整构建流程 (推荐) - 按照官方手工构建步骤"
+    echo "1) 完整构建流程 (推荐) - 按照官方手工构建步骤 + 官方版本标识"
     echo "2) 配置镜像信息"
     echo "3) 仅构建前端静态文件"
-    echo "4) 仅构建后端"
+    echo "4) 仅构建后端 (包含官方版本标识)"
     echo "5) 仅构建Docker镜像 (本地)"
     echo "6) 构建并推送Docker镜像"
     echo "7) 仅推送到Docker Hub"
@@ -905,8 +977,9 @@ show_menu() {
 }
 
 main() {
-    echo -e "${GREEN}欢迎使用 Komari Docker 镜像自动构建脚本 (AMD64架构专用 + SQLite支持)!${NC}"
+    echo -e "${GREEN}欢迎使用 Komari Docker 镜像自动构建脚本 (AMD64架构专用 + 官方版本标识)!${NC}"
     echo -e "${BLUE}此脚本专门为AMD64/x86_64架构优化，启用CGO支持SQLite数据库${NC}"
+    echo -e "${BLUE}新增功能: 自动获取官方版本号，生成基于官方版本的自定义标识${NC}"
     echo -e "${BLUE}构建流程: 前端静态文件 → 后端项目 → 复制静态文件 → CGO编译二进制 → Docker镜像 → Docker Compose${NC}"
     echo
     
@@ -924,7 +997,7 @@ main() {
         
         case $choice in
             1)
-                print_info "开始完整构建流程（按照官方手工构建步骤）..."
+                print_info "开始完整构建流程（按照官方手工构建步骤 + 官方版本标识）..."
                 
                 if [ -z "$DOCKER_USERNAME" ] || [ -z "$IMAGE_NAME" ] || [ -z "$IMAGE_TAG" ]; then
                     get_image_info
