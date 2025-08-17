@@ -2,7 +2,7 @@
 
 # Komari项目Docker镜像自动构建脚本
 # 作者: AI Assistant
-# 用途: 自动拉取、构建和推送komari项目的Docker镜像
+# 用途: 按照官方手工构建流程自动拉取、构建和推送komari项目的Docker镜像
 
 # 颜色定义
 RED='\033[0;31m'
@@ -17,9 +17,10 @@ IMAGE_NAME=""
 IMAGE_TAG="latest"
 FULL_IMAGE_NAME=""
 WORK_DIR=""
-PROJECT_NAME="komari"
-GITHUB_REPO="https://github.com/komari-monitor/komari.git"
+FRONTEND_PROJECT="komari-web"
+BACKEND_PROJECT="komari"
 FRONTEND_REPO="https://github.com/komari-monitor/komari-web.git"
+BACKEND_REPO="https://github.com/komari-monitor/komari.git"
 
 # 打印带颜色的消息
 print_info() {
@@ -77,7 +78,15 @@ check_requirements() {
         missing_tools+=("nodejs")
         need_install=true
     else
-        print_success "Node.js已安装: $(node --version)"
+        local node_version=$(node --version | sed 's/v//')
+        local major_version=$(echo $node_version | cut -d. -f1)
+        if [ "$major_version" -lt 20 ]; then
+            print_warning "Node.js版本过低 ($node_version)，需要20+，正在升级..."
+            missing_tools+=("nodejs")
+            need_install=true
+        else
+            print_success "Node.js已安装: $(node --version)"
+        fi
     fi
     
     # 检查npm
@@ -95,7 +104,16 @@ check_requirements() {
         missing_tools+=("golang")
         need_install=true
     else
-        print_success "Go已安装: $(go version)"
+        local go_version=$(go version | awk '{print $3}' | sed 's/go//')
+        local major_version=$(echo $go_version | cut -d. -f1)
+        local minor_version=$(echo $go_version | cut -d. -f2)
+        if [ "$major_version" -lt 1 ] || ([ "$major_version" -eq 1 ] && [ "$minor_version" -lt 18 ]); then
+            print_warning "Go版本过低 ($go_version)，需要1.18+，正在升级..."
+            missing_tools+=("golang")
+            need_install=true
+        else
+            print_success "Go已安装: $(go version)"
+        fi
     fi
     
     # 检查git
@@ -163,13 +181,13 @@ install_tools_linux() {
                     print_success "Docker安装完成"
                     ;;
                 "nodejs")
-                    print_info "安装Node.js..."
-                    curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+                    print_info "安装Node.js 20+..."
+                    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
                     sudo apt-get install -y nodejs
                     print_success "Node.js安装完成"
                     ;;
                 "golang")
-                    print_info "安装Go..."
+                    print_info "安装Go 1.21+..."
                     GO_VERSION="1.21.5"
                     wget -q https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
                     sudo rm -rf /usr/local/go
@@ -197,11 +215,17 @@ install_tools_linux() {
                     sudo usermod -aG docker $USER
                     ;;
                 "nodejs")
-                    curl -fsSL https://rpm.nodesource.com/setup_lts.x | sudo bash -
+                    curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -
                     sudo yum install -y nodejs
                     ;;
                 "golang")
-                    sudo yum install -y golang
+                    GO_VERSION="1.21.5"
+                    wget -q https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
+                    sudo rm -rf /usr/local/go
+                    sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
+                    echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+                    export PATH=$PATH:/usr/local/go/bin
+                    rm go${GO_VERSION}.linux-amd64.tar.gz
                     ;;
                 "git")
                     sudo yum install -y git
@@ -227,7 +251,7 @@ install_tools_macos() {
                 brew install --cask docker
                 ;;
             "nodejs")
-                brew install node
+                brew install node@20
                 ;;
             "golang")
                 brew install go
@@ -256,16 +280,16 @@ install_tools_windows() {
                 ;;
             "nodejs")
                 if command -v winget &> /dev/null; then
-                    winget install OpenJS.NodeJS
+                    winget install OpenJS.NodeJS.LTS
                 else
-                    print_warning "请手动安装Node.js"
+                    print_warning "请手动安装Node.js 20+"
                 fi
                 ;;
             "golang")
                 if command -v winget &> /dev/null; then
                     winget install GoLang.Go
                 else
-                    print_warning "请手动安装Go"
+                    print_warning "请手动安装Go 1.18+"
                 fi
                 ;;
             "git")
@@ -300,77 +324,37 @@ check_docker_buildx() {
     fi
 }
 
-# 拉取项目代码
-clone_project() {
-    print_info "开始拉取Komari项目..."
+# 步骤1: 构建前端静态文件（按照官方文档）
+build_frontend() {
+    print_info "=== 步骤1: 构建前端静态文件 ==="
     
     cd "$WORK_DIR" || {
         print_error "无法切换到工作目录: $WORK_DIR"
         return 1
     }
     
-    # 如果项目目录已存在，先删除
-    if [ -d "$PROJECT_NAME" ]; then
-        print_warning "发现已存在的项目目录，正在删除..."
-        rm -rf "$PROJECT_NAME"
-    fi
-    
-    # 克隆主项目
-    print_info "克隆主项目: $GITHUB_REPO"
-    if git clone "$GITHUB_REPO" "$PROJECT_NAME"; then
-        print_success "主项目克隆成功"
-    else
-        print_error "主项目克隆失败"
-        return 1
-    fi
-    
-    # 进入项目目录
-    cd "$PROJECT_NAME" || {
-        print_error "无法进入项目目录"
-        return 1
-    }
-    
-    # 验证项目结构
-    if [ ! -f "go.mod" ] || [ ! -f "Dockerfile" ]; then
-        print_error "项目结构不完整，缺少必要文件"
-        return 1
-    fi
-    
-    print_success "项目拉取完成"
-    return 0
-}
-
-# 构建前端
-build_frontend() {
-    print_info "开始构建前端..."
-    
-    # 确保在项目目录中
-    cd "$WORK_DIR/$PROJECT_NAME" || {
-        print_error "无法进入项目目录"
-        return 1
-    }
-    
-    # 检查是否已存在web目录
-    if [ -d "web" ]; then
-        print_warning "发现已存在的web目录，正在删除..."
-        rm -rf web
+    # 如果前端项目目录已存在，先删除
+    if [ -d "$FRONTEND_PROJECT" ]; then
+        print_warning "发现已存在的前端项目目录，正在删除..."
+        rm -rf "$FRONTEND_PROJECT"
     fi
     
     # 克隆前端项目
     print_info "克隆前端项目: $FRONTEND_REPO"
-    if git clone "$FRONTEND_REPO" web; then
+    if git clone "$FRONTEND_REPO" "$FRONTEND_PROJECT"; then
         print_success "前端项目克隆成功"
     else
         print_error "前端项目克隆失败"
         return 1
     fi
     
-    # 构建前端
-    cd web || {
-        print_error "无法进入前端目录"
+    # 进入前端项目目录
+    cd "$FRONTEND_PROJECT" || {
+        print_error "无法进入前端项目目录"
         return 1
     }
     
+    # 安装前端依赖
     print_info "安装前端依赖..."
     if npm install; then
         print_success "前端依赖安装成功"
@@ -379,6 +363,7 @@ build_frontend() {
         return 1
     fi
     
+    # 构建前端项目
     print_info "构建前端项目..."
     if npm run build; then
         print_success "前端项目构建成功"
@@ -387,41 +372,67 @@ build_frontend() {
         return 1
     fi
     
-    # 返回项目根目录
-    cd "$WORK_DIR/$PROJECT_NAME" || {
-        print_error "无法返回项目目录"
-        return 1
-    }
-    
-    # 复制构建结果
-    print_info "复制前端构建结果..."
-    mkdir -p public/dist
-    if cp -r web/dist/* public/dist/; then
-        print_success "前端构建完成"
-        return 0
-    else
-        print_error "前端构建结果复制失败"
+    # 验证构建结果
+    if [ ! -d "dist" ]; then
+        print_error "前端构建失败，未找到dist目录"
         return 1
     fi
+    
+    print_success "前端静态文件构建完成"
+    return 0
 }
 
-# 构建后端
+# 步骤2: 构建后端（按照官方文档）
 build_backend() {
-    print_info "开始构建后端二进制文件..."
+    print_info "=== 步骤2: 构建后端 ==="
     
-    # 确保在项目目录中
-    cd "$WORK_DIR/$PROJECT_NAME" || {
-        print_error "无法进入项目目录"
+    cd "$WORK_DIR" || {
+        print_error "无法切换到工作目录: $WORK_DIR"
         return 1
     }
     
-    # 验证go.mod文件
-    if [ ! -f "go.mod" ]; then
-        print_error "未找到go.mod文件"
+    # 如果后端项目目录已存在，先删除
+    if [ -d "$BACKEND_PROJECT" ]; then
+        print_warning "发现已存在的后端项目目录，正在删除..."
+        rm -rf "$BACKEND_PROJECT"
+    fi
+    
+    # 克隆后端项目
+    print_info "克隆后端项目: $BACKEND_REPO"
+    if git clone "$BACKEND_REPO" "$BACKEND_PROJECT"; then
+        print_success "后端项目克隆成功"
+    else
+        print_error "后端项目克隆失败"
         return 1
     fi
     
-    print_success "确认go.mod文件存在"
+    # 进入后端项目目录
+    cd "$BACKEND_PROJECT" || {
+        print_error "无法进入后端项目目录"
+        return 1
+    }
+    
+    # 验证项目结构
+    if [ ! -f "go.mod" ] || [ ! -f "Dockerfile" ]; then
+        print_error "后端项目结构不完整，缺少必要文件"
+        return 1
+    fi
+    
+    # 按照官方文档：将前端构建结果复制到后端项目的/public/dist目录
+    print_info "复制前端静态文件到后端项目的/public/dist目录..."
+    mkdir -p public/dist
+    
+    if [ -d "$WORK_DIR/$FRONTEND_PROJECT/dist" ]; then
+        if cp -r "$WORK_DIR/$FRONTEND_PROJECT/dist"/* public/dist/; then
+            print_success "前端静态文件复制成功"
+        else
+            print_error "前端静态文件复制失败"
+            return 1
+        fi
+    else
+        print_error "未找到前端构建结果目录: $WORK_DIR/$FRONTEND_PROJECT/dist"
+        return 1
+    fi
     
     # 设置环境变量
     export CGO_ENABLED=1
@@ -469,11 +480,11 @@ build_backend() {
 
 # 构建Docker镜像（本地版本）
 build_docker_image_local() {
-    print_info "开始构建本地Docker镜像: $FULL_IMAGE_NAME"
+    print_info "=== 步骤3: 构建Docker镜像 ==="
     
-    # 确保在项目目录中
-    cd "$WORK_DIR/$PROJECT_NAME" || {
-        print_error "无法进入项目目录"
+    # 确保在后端项目目录中
+    cd "$WORK_DIR/$BACKEND_PROJECT" || {
+        print_error "无法进入后端项目目录"
         return 1
     }
     
@@ -489,7 +500,7 @@ build_docker_image_local() {
     fi
     
     # 构建本地镜像
-    print_info "构建本地Docker镜像..."
+    print_info "构建本地Docker镜像: $FULL_IMAGE_NAME"
     if docker buildx build \
         --platform linux/amd64 \
         --tag "$FULL_IMAGE_NAME" \
@@ -514,11 +525,11 @@ build_docker_image_local() {
 
 # 构建并推送Docker镜像
 build_docker_image() {
-    print_info "开始构建并推送Docker镜像: $FULL_IMAGE_NAME"
+    print_info "=== 步骤3: 构建并推送Docker镜像 ==="
     
-    # 确保在项目目录中
-    cd "$WORK_DIR/$PROJECT_NAME" || {
-        print_error "无法进入项目目录"
+    # 确保在后端项目目录中
+    cd "$WORK_DIR/$BACKEND_PROJECT" || {
+        print_error "无法进入后端项目目录"
         return 1
     }
     
@@ -543,7 +554,7 @@ build_docker_image() {
     fi
     
     # 构建并推送多架构镜像
-    print_info "构建多架构Docker镜像并推送..."
+    print_info "构建多架构Docker镜像并推送: $FULL_IMAGE_NAME"
     if docker buildx build \
         --platform linux/amd64,linux/arm64 \
         --tag "$FULL_IMAGE_NAME" \
@@ -771,6 +782,7 @@ push_to_dockerhub() {
         [Nn]* )
             print_info "跳过推送到Docker Hub"
             print_info "如需稍后推送，请使用以下命令:"
+            echo -e "${GREEN}cd $WORK_DIR/$BACKEND_PROJECT${NC}"
             echo -e "${GREEN}docker buildx build --platform linux/amd64,linux/arm64 --tag $FULL_IMAGE_NAME --push .${NC}"
             ;;
         * )
@@ -791,19 +803,28 @@ cleanup() {
         [Yy]* )
             print_info "清理中..."
             cd "$WORK_DIR" || return
-            if [ -d "$PROJECT_NAME" ]; then
-                rm -rf "$PROJECT_NAME"
-                print_success "项目目录已清理"
+            
+            if [ -d "$FRONTEND_PROJECT" ]; then
+                rm -rf "$FRONTEND_PROJECT"
+                print_success "前端项目目录已清理"
             fi
+            
+            if [ -d "$BACKEND_PROJECT" ]; then
+                rm -rf "$BACKEND_PROJECT"
+                print_success "后端项目目录已清理"
+            fi
+            
             if [ -f ".docker-build-config" ]; then
                 rm -f ".docker-build-config"
                 print_success "配置文件已清理"
             fi
+            
             print_success "临时文件清理完成"
             ;;
         [Nn]* )
             print_info "保留临时文件"
-            print_info "项目目录: $WORK_DIR/$PROJECT_NAME"
+            print_info "前端项目目录: $WORK_DIR/$FRONTEND_PROJECT"
+            print_info "后端项目目录: $WORK_DIR/$BACKEND_PROJECT"
             ;;
         * )
             print_warning "无效选择，保留临时文件"
@@ -814,7 +835,7 @@ cleanup() {
 # 显示菜单
 show_menu() {
     echo
-    echo -e "${BLUE}=== Komari Docker 镜像构建脚本 ===${NC}"
+    echo -e "${BLUE}=== Komari Docker 镜像构建脚本 (官方手工构建流程) ===${NC}"
     echo -e "${YELLOW}工作目录: $WORK_DIR${NC}"
     if [ -n "$DOCKER_USERNAME" ] && [ -n "$IMAGE_NAME" ] && [ -n "$IMAGE_TAG" ]; then
         echo -e "${YELLOW}当前配置: $FULL_IMAGE_NAME${NC}"
@@ -823,15 +844,14 @@ show_menu() {
     fi
     echo
     echo "请选择操作:"
-    echo "1) 完整构建流程 (推荐)"
+    echo "1) 完整构建流程 (推荐) - 按照官方手工构建步骤"
     echo "2) 配置镜像信息"
-    echo "3) 拉取项目代码"
-    echo "4) 仅构建前端"
-    echo "5) 仅构建后端"
-    echo "6) 仅构建Docker镜像 (本地)"
-    echo "7) 构建并推送Docker镜像"
-    echo "8) 仅推送到Docker Hub"
-    echo "9) 清理临时文件"
+    echo "3) 仅构建前端静态文件"
+    echo "4) 仅构建后端"
+    echo "5) 仅构建Docker镜像 (本地)"
+    echo "6) 构建并推送Docker镜像"
+    echo "7) 仅推送到Docker Hub"
+    echo "8) 清理临时文件"
     echo "0) 退出"
     echo
 }
@@ -839,7 +859,8 @@ show_menu() {
 # 主函数
 main() {
     echo -e "${GREEN}欢迎使用 Komari Docker 镜像自动构建脚本!${NC}"
-    echo -e "${BLUE}此脚本将自动拉取项目、构建前后端、打包Docker镜像并推送${NC}"
+    echo -e "${BLUE}此脚本严格按照官方README.md中的手工构建流程执行${NC}"
+    echo -e "${BLUE}构建流程: 前端静态文件 → 后端项目 → 复制静态文件 → 构建二进制 → Docker镜像${NC}"
     echo
     
     # 初始化工作目录
@@ -857,37 +878,31 @@ main() {
     # 主循环
     while true; do
         show_menu
-        read -p "请输入选项 (0-9): " choice
+        read -p "请输入选项 (0-8): " choice
         
         case $choice in
             1)
-                # 完整构建流程
-                print_info "开始完整构建流程..."
+                # 完整构建流程（按照官方手工构建步骤）
+                print_info "开始完整构建流程（按照官方手工构建步骤）..."
                 
                 # 如果没有配置信息，先获取
                 if [ -z "$DOCKER_USERNAME" ] || [ -z "$IMAGE_NAME" ] || [ -z "$IMAGE_TAG" ]; then
                     get_image_info
                 fi
                 
-                # 拉取项目
-                if ! clone_project; then
-                    print_error "项目拉取失败，停止构建流程"
-                    continue
-                fi
-                
-                # 构建前端
+                # 步骤1: 构建前端静态文件
                 if ! build_frontend; then
                     print_error "前端构建失败，停止构建流程"
                     continue
                 fi
                 
-                # 构建后端
+                # 步骤2: 构建后端（包含复制前端静态文件）
                 if ! build_backend; then
                     print_error "后端构建失败，停止构建流程"
                     continue
                 fi
                 
-                # 构建本地镜像
+                # 步骤3: 构建本地Docker镜像
                 if ! build_docker_image_local; then
                     print_error "Docker镜像构建失败，停止构建流程"
                     continue
@@ -906,27 +921,22 @@ main() {
                 get_image_info
                 ;;
             3)
-                if clone_project; then
-                    print_success "项目拉取完成！"
-                else
-                    print_error "项目拉取失败！"
-                fi
-                ;;
-            4)
                 if build_frontend; then
-                    print_success "前端构建完成！"
+                    print_success "前端静态文件构建完成！"
+                    print_info "构建结果位于: $WORK_DIR/$FRONTEND_PROJECT/dist"
                 else
                     print_error "前端构建失败！"
                 fi
                 ;;
-            5)
+            4)
                 if build_backend; then
                     print_success "后端构建完成！"
+                    print_info "构建结果位于: $WORK_DIR/$BACKEND_PROJECT"
                 else
                     print_error "后端构建失败！"
                 fi
                 ;;
-            6)
+            5)
                 if [ -z "$DOCKER_USERNAME" ] || [ -z "$IMAGE_NAME" ] || [ -z "$IMAGE_TAG" ]; then
                     get_image_info
                 fi
@@ -936,7 +946,7 @@ main() {
                     print_error "Docker镜像构建失败！"
                 fi
                 ;;
-            7)
+            6)
                 if [ -z "$DOCKER_USERNAME" ] || [ -z "$IMAGE_NAME" ] || [ -z "$IMAGE_TAG" ]; then
                     get_image_info
                 fi
@@ -946,13 +956,13 @@ main() {
                     print_error "Docker镜像构建失败！"
                 fi
                 ;;
-            8)
+            7)
                 if [ -z "$DOCKER_USERNAME" ] || [ -z "$IMAGE_NAME" ] || [ -z "$IMAGE_TAG" ]; then
                     get_image_info
                 fi
                 push_to_dockerhub
                 ;;
-            9)
+            8)
                 cleanup
                 ;;
             0)
