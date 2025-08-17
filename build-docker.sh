@@ -647,7 +647,7 @@ build_docker_image() {
     fi
 }
 
-# 生成docker-compose.yml文件
+# 生成docker-compose.yml文件（使用用户指定的配置）
 generate_docker_compose() {
     print_info "=== 生成docker-compose.yml文件 ==="
     
@@ -681,7 +681,7 @@ generate_docker_compose() {
         esac
     fi
     
-    # 生成docker-compose.yml内容
+    # 生成docker-compose.yml内容（使用用户指定的配置）
     print_info "生成docker-compose.yml文件..."
     cat > "$compose_file" << EOF
 version: '3.8'
@@ -697,17 +697,10 @@ services:
       - GIN_MODE=release
       - KOMARI_DB_TYPE=sqlite
       - KOMARI_DB_FILE=/app/data/komari.db
-      # 可选：自定义初始管理员账号密码
-      - ADMIN_USERNAME=admin
-      - ADMIN_PASSWORD=yourpassword
+      # 自定义管理员账号密码
+      - ADMIN_USERNAME=komari233
+      - ADMIN_PASSWORD=Fcx331fcx331
     restart: unless-stopped
-    # 可选：健康检查
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:25774"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
 EOF
     
     if [ -f "$compose_file" ]; then
@@ -731,7 +724,8 @@ EOF
         echo -e "${GREEN}docker-compose restart komari${NC}"
         echo
         print_info "访问地址: http://localhost:25774"
-        print_info "默认账号: admin / yourpassword (请及时修改密码)"
+        print_info "管理员账号: komari233 / Fcx331fcx331"
+        print_warning "请在首次登录后及时修改密码以确保安全！"
         return 0
     else
         print_error "docker-compose.yml文件生成失败"
