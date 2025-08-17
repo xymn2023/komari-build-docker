@@ -18,6 +18,9 @@ BACKEND_REPO="https://github.com/komari-monitor/komari.git"
 BUILDX_BUILDER="amd64-builder"
 TARGET_ARCH="linux/amd64"
 
+# 全局标志，标记是否需要清理构建器
+BUILDER_CREATED=false
+
 print_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
 }
@@ -33,6 +36,42 @@ print_warning() {
 print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
+
+# 清理构建器函数
+cleanup_builder() {
+    if [ "$BUILDER_CREATED" = true ]; then
+        print_info "清理Docker Buildx构建器: $BUILDX_BUILDER"
+        
+        # 检查构建器是否存在
+        if docker buildx ls | grep -q "$BUILDX_BUILDER"; then
+            # 停止并删除构建器
+            docker buildx rm "$BUILDX_BUILDER" &> /dev/null || true
+            print_success "构建器 $BUILDX_BUILDER 已清理"
+        else
+            print_info "构建器 $BUILDX_BUILDER 不存在，无需清理"
+        fi
+        
+        BUILDER_CREATED=false
+    fi
+}
+
+# 脚本退出时的清理函数
+cleanup_on_exit() {
+    echo
+    print_info "脚本即将退出，执行清理操作..."
+    
+    # 清理构建器
+    cleanup_builder
+    
+    print_success "清理完成，感谢使用 Komari Docker 构建脚本！"
+    echo
+}
+
+# 设置退出时的清理陷阱
+trap cleanup_on_exit EXIT
+
+# 设置中断信号的清理陷阱
+trap 'echo; print_warning "检测到中断信号，正在清理..."; cleanup_on_exit; exit 130' INT TERM
 
 # 从GitHub API获取官方最新版本信息
 get_official_version_info() {
@@ -261,36 +300,16 @@ check_docker_buildx() {
     
     print_success "Docker Buildx已安装: $(docker buildx version)"
     
+    # 先清理可能存在的旧构建器
     if docker buildx ls | grep -q "$BUILDX_BUILDER"; then
-        print_info "发现已存在的构建器: $BUILDX_BUILDER"
-        if docker buildx ls | grep "$BUILDX_BUILDER" | grep -q "running"; then
-            print_success "构建器 $BUILDX_BUILDER 正在运行"
-        else
-            print_warning "构建器 $BUILDX_BUILDER 未运行，正在启动..."
-            docker buildx inspect --bootstrap "$BUILDX_BUILDER" &> /dev/null || {
-                print_warning "启动失败，重新创建构建器..."
-                docker buildx rm "$BUILDX_BUILDER" &> /dev/null || true
-                create_buildx_builder
-            }
-        fi
-    else
-        print_info "创建AMD64构建器..."
-        create_buildx_builder
+        print_warning "发现已存在的构建器 $BUILDX_BUILDER，正在清理..."
+        docker buildx rm "$BUILDX_BUILDER" &> /dev/null || true
+        print_success "旧构建器已清理"
     fi
     
-    if docker buildx use "$BUILDX_BUILDER" &> /dev/null; then
-        print_success "已切换到AMD64构建器: $BUILDX_BUILDER"
-    else
-        print_error "无法切换到构建器: $BUILDX_BUILDER"
-        return 1
-    fi
-    
-    print_info "验证AMD64构建支持..."
-    if docker buildx inspect | grep -q "linux/amd64"; then
-        print_success "AMD64构建支持已启用"
-    else
-        print_warning "AMD64支持可能有问题，但将继续尝试构建"
-    fi
+    # 创建新的构建器
+    print_info "创建新的AMD64构建器..."
+    create_buildx_builder
 }
 
 create_buildx_builder() {
@@ -302,6 +321,7 @@ create_buildx_builder() {
         --platform linux/amd64 \
         --use; then
         print_success "构建器创建成功: $BUILDX_BUILDER"
+        BUILDER_CREATED=true  # 标记构建器已创建
     else
         print_error "构建器创建失败"
         return 1
@@ -952,9 +972,10 @@ cleanup() {
 
 show_menu() {
     echo
-    echo -e "${BLUE}=== Komari Docker 镜像构建脚本 (AMD64架构专用 + 官方版本标识) ===${NC}"
+    echo -e "${BLUE}=== Komari Docker 镜像构建脚本 (AMD64架构专用 + 官方版本标识 + 自动清理) ===${NC}"
     echo -e "${YELLOW}工作目录: $WORK_DIR${NC}"
     echo -e "${YELLOW}目标架构: linux/amd64 (CGO启用 + 官方版本标识)${NC}"
+    echo -e "${YELLOW}构建器管理: 自动创建和清理 $BUILDX_BUILDER${NC}"
     if [ -n "$DOCKER_USERNAME" ] && [ -n "$IMAGE_NAME" ] && [ -n "$IMAGE_TAG" ]; then
         echo -e "${YELLOW}当前配置: $FULL_IMAGE_NAME${NC}"
     else
@@ -972,14 +993,16 @@ show_menu() {
     echo "8) 清理临时文件"
     echo "9) 重新配置Docker Buildx"
     echo "10) 生成docker-compose.yml文件"
-    echo "0) 退出"
+    echo "11) 手动清理构建器"
+    echo "0) 退出 (自动清理构建器)"
     echo
 }
 
 main() {
-    echo -e "${GREEN}欢迎使用 Komari Docker 镜像自动构建脚本 (AMD64架构专用 + 官方版本标识)!${NC}"
+    echo -e "${GREEN}欢迎使用 Komari Docker 镜像自动构建脚本 (AMD64架构专用 + 官方版本标识 + 自动清理)!${NC}"
     echo -e "${BLUE}此脚本专门为AMD64/x86_64架构优化，启用CGO支持SQLite数据库${NC}"
     echo -e "${BLUE}新增功能: 自动获取官方版本号，生成基于官方版本的自定义标识${NC}"
+    echo -e "${BLUE}构建器管理: 脚本启动时创建，退出时自动清理 $BUILDX_BUILDER${NC}"
     echo -e "${BLUE}构建流程: 前端静态文件 → 后端项目 → 复制静态文件 → CGO编译二进制 → Docker镜像 → Docker Compose${NC}"
     echo
     
@@ -993,7 +1016,7 @@ main() {
     
     while true; do
         show_menu
-        read -p "请输入选项 (0-10): " choice
+        read -p "请输入选项 (0-11): " choice
         
         case $choice in
             1)
@@ -1077,8 +1100,9 @@ main() {
                 ;;
             9)
                 print_info "重新配置Docker Buildx..."
-                docker buildx rm "$BUILDX_BUILDER" &> /dev/null || true
-                if check_docker_buildx; then
+                cleanup_builder  # 先清理旧的
+                check_docker_buildx  # 重新创建
+                if [ "$BUILDER_CREATED" = true ]; then
                     print_success "Docker Buildx重新配置完成！"
                 else
                     print_error "Docker Buildx配置失败！"
@@ -1094,9 +1118,14 @@ main() {
                     print_error "docker-compose.yml文件生成失败！"
                 fi
                 ;;
+            11)
+                print_info "手动清理构建器..."
+                cleanup_builder
+                print_success "构建器清理完成！"
+                ;;
             0)
-                print_info "感谢使用 Komari Docker 构建脚本！"
-                print_info "再见！"
+                print_info "正在退出脚本..."
+                # EXIT trap 会自动调用 cleanup_on_exit
                 exit 0
                 ;;
             *)
