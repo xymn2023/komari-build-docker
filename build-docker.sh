@@ -254,24 +254,77 @@ install_tools_linux() {
     print_success "所有工具安装完成"
 }
 
-# 检查Docker Buildx
+# 检查并配置Docker Buildx（修复多架构构建问题）
 check_docker_buildx() {
-    print_info "检查Docker Buildx..."
+    print_info "检查并配置Docker Buildx..."
     
+    # 检查Docker Buildx是否可用
     if ! docker buildx version &> /dev/null; then
-        print_warning "Docker Buildx未安装或未启用"
-        print_info "尝试启用Docker Buildx..."
-        
-        docker buildx create --name multiarch --driver docker-container --use 2>/dev/null || true
-        docker buildx inspect --bootstrap 2>/dev/null || true
-        
-        if docker buildx version &> /dev/null; then
-            print_success "Docker Buildx已启用"
+        print_error "Docker Buildx未安装，请升级Docker到最新版本"
+        return 1
+    fi
+    
+    print_success "Docker Buildx已安装: $(docker buildx version)"
+    
+    # 检查是否已有多架构构建器
+    if docker buildx ls | grep -q "$BUILDX_BUILDER"; then
+        print_info "发现已存在的构建器: $BUILDX_BUILDER"
+        # 检查构建器状态
+        if docker buildx ls | grep "$BUILDX_BUILDER" | grep -q "running"; then
+            print_success "构建器 $BUILDX_BUILDER 正在运行"
         else
-            print_warning "Docker Buildx启用失败，将使用标准构建"
+            print_warning "构建器 $BUILDX_BUILDER 未运行，正在启动..."
+            docker buildx inspect --bootstrap "$BUILDX_BUILDER" &> /dev/null || {
+                print_warning "启动失败，重新创建构建器..."
+                docker buildx rm "$BUILDX_BUILDER" &> /dev/null || true
+                create_buildx_builder
+            }
         fi
     else
-        print_success "Docker Buildx已可用: $(docker buildx version)"
+        print_info "创建多架构构建器..."
+        create_buildx_builder
+    fi
+    
+    # 设置为默认构建器
+    if docker buildx use "$BUILDX_BUILDER" &> /dev/null; then
+        print_success "已切换到多架构构建器: $BUILDX_BUILDER"
+    else
+        print_error "无法切换到构建器: $BUILDX_BUILDER"
+        return 1
+    fi
+    
+    # 验证多架构支持
+    print_info "验证多架构构建支持..."
+    if docker buildx inspect | grep -q "linux/amd64" && docker buildx inspect | grep -q "linux/arm64"; then
+        print_success "多架构构建支持已启用 (linux/amd64, linux/arm64)"
+    else
+        print_warning "多架构支持可能有问题，但将继续尝试构建"
+    fi
+}
+
+# 创建Docker Buildx构建器
+create_buildx_builder() {
+    print_info "创建Docker Buildx构建器: $BUILDX_BUILDER"
+    
+    # 创建新的构建器实例
+    if docker buildx create \
+        --name "$BUILDX_BUILDER" \
+        --driver docker-container \
+        --platform linux/amd64,linux/arm64 \
+        --use; then
+        print_success "构建器创建成功: $BUILDX_BUILDER"
+    else
+        print_error "构建器创建失败"
+        return 1
+    fi
+    
+    # 启动并验证构建器
+    print_info "启动构建器..."
+    if docker buildx inspect --bootstrap "$BUILDX_BUILDER"; then
+        print_success "构建器启动成功"
+    else
+        print_error "构建器启动失败"
+        return 1
     fi
 }
 
@@ -385,10 +438,6 @@ build_backend() {
         return 1
     fi
     
-    # 设置环境变量
-    export CGO_ENABLED=1
-    export GIN_MODE=release
-    
     # 获取版本信息
     VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
     VERSION_HASH=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
@@ -468,8 +517,14 @@ build_docker_image_local() {
         return 1
     fi
     
-    # 构建本地镜像
-    print_info "构建本地Docker镜像: $FULL_IMAGE_NAME"
+    # 确保使用正确的构建器
+    if ! docker buildx use "$BUILDX_BUILDER" &> /dev/null; then
+        print_warning "无法切换到构建器 $BUILDX_BUILDER，尝试重新配置..."
+        check_docker_buildx
+    fi
+    
+    # 构建本地镜像（仅amd64，避免多架构问题）
+    print_info "构建本地Docker镜像 (linux/amd64): $FULL_IMAGE_NAME"
     if docker buildx build \
         --platform linux/amd64 \
         --tag "$FULL_IMAGE_NAME" \
@@ -492,7 +547,7 @@ build_docker_image_local() {
     fi
 }
 
-# 构建并推送Docker镜像
+# 构建并推送Docker镜像（修复多架构构建问题）
 build_docker_image() {
     print_info "=== 步骤3: 构建并推送Docker镜像 ==="
     
@@ -522,8 +577,29 @@ build_docker_image() {
         fi
     fi
     
+    # 确保使用正确的构建器
+    if ! docker buildx use "$BUILDX_BUILDER" &> /dev/null; then
+        print_warning "无法切换到构建器 $BUILDX_BUILDER，尝试重新配置..."
+        if ! check_docker_buildx; then
+            print_error "无法配置多架构构建器"
+            return 1
+        fi
+    fi
+    
+    # 验证构建器状态
+    print_info "验证构建器状态..."
+    if ! docker buildx inspect "$BUILDX_BUILDER" | grep -q "running"; then
+        print_info "启动构建器..."
+        docker buildx inspect --bootstrap "$BUILDX_BUILDER" || {
+            print_error "无法启动构建器"
+            return 1
+        }
+    fi
+    
     # 构建并推送多架构镜像
     print_info "构建多架构Docker镜像并推送: $FULL_IMAGE_NAME"
+    print_info "支持的架构: linux/amd64, linux/arm64"
+    
     if docker buildx build \
         --platform linux/amd64,linux/arm64 \
         --tag "$FULL_IMAGE_NAME" \
@@ -542,11 +618,30 @@ build_docker_image() {
                 --push \
                 . ; then
                 print_success "latest标签构建成功"
+            else
+                print_warning "latest标签构建失败，但主镜像构建成功"
             fi
         fi
+        
+        echo
+        print_success "Docker镜像推送完成!"
+        print_info "您可以使用以下命令拉取镜像:"
+        echo -e "${GREEN}docker pull $FULL_IMAGE_NAME${NC}"
+        if [ "$IMAGE_TAG" != "latest" ]; then
+            echo -e "${GREEN}docker pull ${DOCKER_USERNAME}/${IMAGE_NAME}:latest${NC}"
+        fi
+        echo
+        print_info "Docker Hub链接:"
+        echo -e "${BLUE}https://hub.docker.com/r/$DOCKER_USERNAME/$IMAGE_NAME${NC}"
+        
         return 0
     else
         print_error "Docker镜像构建失败"
+        print_info "可能的解决方案:"
+        print_info "1. 检查网络连接"
+        print_info "2. 确认Docker Hub登录状态"
+        print_info "3. 验证仓库权限"
+        print_info "4. 尝试重新创建构建器: docker buildx rm $BUILDX_BUILDER"
         return 1
     fi
 }
@@ -804,7 +899,7 @@ cleanup() {
 # 显示菜单
 show_menu() {
     echo
-    echo -e "${BLUE}=== Komari Docker 镜像构建脚本 (Linux优化版) ===${NC}"
+    echo -e "${BLUE}=== Komari Docker 镜像构建脚本 (多架构支持) ===${NC}"
     echo -e "${YELLOW}工作目录: $WORK_DIR${NC}"
     if [ -n "$DOCKER_USERNAME" ] && [ -n "$IMAGE_NAME" ] && [ -n "$IMAGE_TAG" ]; then
         echo -e "${YELLOW}当前配置: $FULL_IMAGE_NAME${NC}"
@@ -821,14 +916,15 @@ show_menu() {
     echo "6) 构建并推送Docker镜像"
     echo "7) 仅推送到Docker Hub"
     echo "8) 清理临时文件"
+    echo "9) 重新配置Docker Buildx"
     echo "0) 退出"
     echo
 }
 
 # 主函数
 main() {
-    echo -e "${GREEN}欢迎使用 Komari Docker 镜像自动构建脚本 (Linux优化版)!${NC}"
-    echo -e "${BLUE}此脚本专为Linux系统优化，解决了ARM64交叉编译问题${NC}"
+    echo -e "${GREEN}欢迎使用 Komari Docker 镜像自动构建脚本 (多架构支持)!${NC}"
+    echo -e "${BLUE}此脚本支持Linux多架构构建，已修复Docker Buildx配置问题${NC}"
     echo -e "${BLUE}构建流程: 前端静态文件 → 后端项目 → 复制静态文件 → 构建二进制 → Docker镜像${NC}"
     echo
     
@@ -847,7 +943,7 @@ main() {
     # 主循环
     while true; do
         show_menu
-        read -p "请输入选项 (0-8): " choice
+        read -p "请输入选项 (0-9): " choice
         
         case $choice in
             1)
@@ -933,6 +1029,17 @@ main() {
                 ;;
             8)
                 cleanup
+                ;;
+            9)
+                print_info "重新配置Docker Buildx..."
+                # 删除现有构建器
+                docker buildx rm "$BUILDX_BUILDER" &> /dev/null || true
+                # 重新配置
+                if check_docker_buildx; then
+                    print_success "Docker Buildx重新配置完成！"
+                else
+                    print_error "Docker Buildx配置失败！"
+                fi
                 ;;
             0)
                 print_info "感谢使用 Komari Docker 构建脚本！"
