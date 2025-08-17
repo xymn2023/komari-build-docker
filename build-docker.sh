@@ -647,6 +647,98 @@ build_docker_image() {
     fi
 }
 
+# 生成docker-compose.yml文件
+generate_docker_compose() {
+    print_info "=== 生成docker-compose.yml文件 ==="
+    
+    local compose_file="docker-compose.yml"
+    
+    # 确保在工作目录中
+    cd "$WORK_DIR" || {
+        print_error "无法切换到工作目录: $WORK_DIR"
+        return 1
+    }
+    
+    # 检查是否已存在docker-compose.yml文件
+    if [ -f "$compose_file" ]; then
+        print_warning "发现已存在的docker-compose.yml文件"
+        echo
+        print_info "是否要覆盖现有文件? (y/n)"
+        read -p "请选择: " overwrite_choice
+        
+        case $overwrite_choice in
+            [Yy]* )
+                print_info "覆盖现有文件..."
+                ;;
+            [Nn]* )
+                print_info "跳过生成docker-compose.yml文件"
+                return 0
+                ;;
+            * )
+                print_warning "无效选择，跳过生成"
+                return 0
+                ;;
+        esac
+    fi
+    
+    # 生成docker-compose.yml内容
+    print_info "生成docker-compose.yml文件..."
+    cat > "$compose_file" << EOF
+version: '3.8'
+services:
+  komari:
+    image: $FULL_IMAGE_NAME
+    container_name: komari
+    ports:
+      - "25774:25774"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - GIN_MODE=release
+      - KOMARI_DB_TYPE=sqlite
+      - KOMARI_DB_FILE=/app/data/komari.db
+      # 可选：自定义初始管理员账号密码
+      - ADMIN_USERNAME=admin
+      - ADMIN_PASSWORD=yourpassword
+    restart: unless-stopped
+    # 可选：健康检查
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:25774"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+EOF
+    
+    if [ -f "$compose_file" ]; then
+        print_success "docker-compose.yml文件生成成功: $WORK_DIR/$compose_file"
+        echo
+        print_info "文件内容预览:"
+        echo -e "${YELLOW}$(cat $compose_file)${NC}"
+        echo
+        print_info "使用方法:"
+        echo -e "${GREEN}# 创建数据目录${NC}"
+        echo -e "${GREEN}mkdir -p data${NC}"
+        echo -e "${GREEN}# 启动服务${NC}"
+        echo -e "${GREEN}docker-compose up -d${NC}"
+        echo
+        print_info "管理命令:"
+        echo -e "${GREEN}# 查看日志${NC}"
+        echo -e "${GREEN}docker-compose logs -f komari${NC}"
+        echo -e "${GREEN}# 停止服务${NC}"
+        echo -e "${GREEN}docker-compose down${NC}"
+        echo -e "${GREEN}# 重启服务${NC}"
+        echo -e "${GREEN}docker-compose restart komari${NC}"
+        echo
+        print_info "访问地址: http://localhost:25774"
+        print_info "默认账号: admin / yourpassword (请及时修改密码)"
+        return 0
+    else
+        print_error "docker-compose.yml文件生成失败"
+        return 1
+    fi
+}
+
 # 获取Docker Hub用户名
 get_docker_username() {
     echo
@@ -900,7 +992,7 @@ cleanup() {
 # 显示菜单
 show_menu() {
     echo
-    echo -e "${BLUE}=== Komari Docker 镜像构建脚本 (多架构支持) ===${NC}"
+    echo -e "${BLUE}=== Komari Docker 镜像构建脚本 (多架构支持 + Docker Compose) ===${NC}"
     echo -e "${YELLOW}工作目录: $WORK_DIR${NC}"
     if [ -n "$DOCKER_USERNAME" ] && [ -n "$IMAGE_NAME" ] && [ -n "$IMAGE_TAG" ]; then
         echo -e "${YELLOW}当前配置: $FULL_IMAGE_NAME${NC}"
@@ -918,15 +1010,16 @@ show_menu() {
     echo "7) 仅推送到Docker Hub"
     echo "8) 清理临时文件"
     echo "9) 重新配置Docker Buildx"
+    echo "10) 生成docker-compose.yml文件"
     echo "0) 退出"
     echo
 }
 
 # 主函数
 main() {
-    echo -e "${GREEN}欢迎使用 Komari Docker 镜像自动构建脚本 (多架构支持)!${NC}"
+    echo -e "${GREEN}欢迎使用 Komari Docker 镜像自动构建脚本 (多架构支持 + Docker Compose)!${NC}"
     echo -e "${BLUE}此脚本支持Linux多架构构建，已修复Docker Buildx配置问题${NC}"
-    echo -e "${BLUE}构建流程: 前端静态文件 → 后端项目 → 复制静态文件 → 构建二进制 → Docker镜像${NC}"
+    echo -e "${BLUE}构建流程: 前端静态文件 → 后端项目 → 复制静态文件 → 构建二进制 → Docker镜像 → Docker Compose${NC}"
     echo
     
     # 初始化工作目录
@@ -944,7 +1037,7 @@ main() {
     # 主循环
     while true; do
         show_menu
-        read -p "请输入选项 (0-9): " choice
+        read -p "请输入选项 (0-10): " choice
         
         case $choice in
             1)
@@ -977,6 +1070,10 @@ main() {
                 # 询问是否推送
                 push_to_dockerhub
                 save_config
+                
+                # 生成docker-compose.yml文件
+                generate_docker_compose
+                
                 cleanup
                 
                 echo
@@ -1040,6 +1137,16 @@ main() {
                     print_success "Docker Buildx重新配置完成！"
                 else
                     print_error "Docker Buildx配置失败！"
+                fi
+                ;;
+            10)
+                if [ -z "$DOCKER_USERNAME" ] || [ -z "$IMAGE_NAME" ] || [ -z "$IMAGE_TAG" ]; then
+                    get_image_info
+                fi
+                if generate_docker_compose; then
+                    print_success "docker-compose.yml文件生成完成！"
+                else
+                    print_error "docker-compose.yml文件生成失败！"
                 fi
                 ;;
             0)
