@@ -311,7 +311,7 @@ build_frontend() {
 }
 
 build_backend() {
-    print_info "=== 步骤2: 构建后端 (AMD64架构，静态编译) ==="
+    print_info "=== 步骤2: 构建后端 (AMD64架构，CGO启用) ==="
     
     cd "$WORK_DIR" || {
         print_error "无法切换到工作目录: $WORK_DIR"
@@ -364,9 +364,9 @@ build_backend() {
     
     LDFLAGS="-s -w -X ${MODULE_NAME}/utils.CurrentVersion=${VERSION} -X ${MODULE_NAME}/utils.VersionHash=${VERSION_HASH}"
     
-    print_info "构建 linux/amd64 二进制文件（静态编译）..."
-    if CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags '-extldflags "-static"' -trimpath -ldflags="$LDFLAGS" -o komari-linux-amd64; then
-        print_success "linux/amd64 二进制文件构建成功（静态编译）"
+    print_info "构建 linux/amd64 二进制文件（启用CGO支持SQLite）..."
+    if CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-amd64; then
+        print_success "linux/amd64 二进制文件构建成功（CGO启用）"
     else
         print_error "linux/amd64 二进制文件构建失败"
         return 1
@@ -376,13 +376,55 @@ build_backend() {
         print_success "后端二进制文件构建完成"
         print_info "生成的文件:"
         ls -la komari-linux-amd64
-        print_info "验证静态编译:"
-        file komari-linux-amd64 | grep -q "statically linked" && print_success "确认为静态编译" || print_warning "可能不是完全静态编译"
+        print_info "CGO已启用，支持SQLite数据库"
         return 0
     else
         print_error "二进制文件生成失败"
         return 1
     fi
+}
+
+# 创建新的Dockerfile
+create_dockerfile() {
+    print_info "创建兼容glibc的Dockerfile..."
+    
+    cd "$WORK_DIR/$BACKEND_PROJECT" || {
+        print_error "无法进入后端项目目录"
+        return 1
+    }
+    
+    cat > Dockerfile << 'EOF'
+FROM debian:bookworm-slim
+
+WORKDIR /app
+
+# 安装运行时依赖
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+# 复制二进制文件
+COPY komari-linux-amd64 /app/komari
+RUN chmod +x /app/komari
+
+# 环境变量
+ENV GIN_MODE=release
+ENV KOMARI_DB_TYPE=sqlite
+ENV KOMARI_DB_FILE=/app/data/komari.db
+ENV KOMARI_DB_HOST=localhost
+ENV KOMARI_DB_PORT=3306
+ENV KOMARI_DB_USER=root
+ENV KOMARI_DB_PASS=
+ENV KOMARI_DB_NAME=komari
+ENV KOMARI_LISTEN=0.0.0.0:25774
+
+EXPOSE 25774
+
+CMD ["/app/komari", "server"]
+EOF
+    
+    print_success "Dockerfile创建完成（使用Debian基础镜像）"
 }
 
 build_docker_image_local() {
@@ -393,10 +435,8 @@ build_docker_image_local() {
         return 1
     }
     
-    if [ ! -f "Dockerfile" ]; then
-        print_error "未找到Dockerfile文件"
-        return 1
-    fi
+    # 创建新的Dockerfile
+    create_dockerfile
     
     if [ ! -f "komari-linux-amd64" ]; then
         print_error "未找到后端二进制文件，请先构建后端"
@@ -438,10 +478,8 @@ build_docker_image() {
         return 1
     }
     
-    if [ ! -f "Dockerfile" ]; then
-        print_error "未找到Dockerfile文件"
-        return 1
-    fi
+    # 创建新的Dockerfile
+    create_dockerfile
     
     if [ ! -f "komari-linux-amd64" ]; then
         print_error "未找到后端二进制文件，请先构建后端"
@@ -591,7 +629,7 @@ EOF
         print_info "访问地址: http://localhost:25774"
         print_info "管理员账号: komari233 / Fcx331fcx331"
         print_warning "请在首次登录后及时修改密码以确保安全！"
-        print_info "架构信息: 强制使用AMD64架构，静态编译确保兼容性"
+        print_info "架构信息: AMD64架构，CGO启用，支持SQLite数据库"
         return 0
     else
         print_error "docker-compose.yml文件生成失败"
@@ -683,7 +721,7 @@ get_image_info() {
     echo -e "  镜像标签: ${GREEN}$IMAGE_TAG${NC}"
     echo -e "  完整镜像名: ${GREEN}$FULL_IMAGE_NAME${NC}"
     echo -e "  目标架构: ${GREEN}linux/amd64${NC}"
-    echo -e "  编译方式: ${GREEN}静态编译${NC}"
+    echo -e "  编译方式: ${GREEN}CGO启用（支持SQLite）${NC}"
     echo
     
     print_info "信息是否正确? (y/n)"
@@ -842,9 +880,9 @@ cleanup() {
 
 show_menu() {
     echo
-    echo -e "${BLUE}=== Komari Docker 镜像构建脚本 (AMD64架构专用 + 静态编译) ===${NC}"
+    echo -e "${BLUE}=== Komari Docker 镜像构建脚本 (AMD64架构专用 + SQLite支持) ===${NC}"
     echo -e "${YELLOW}工作目录: $WORK_DIR${NC}"
-    echo -e "${YELLOW}目标架构: linux/amd64 (静态编译)${NC}"
+    echo -e "${YELLOW}目标架构: linux/amd64 (CGO启用)${NC}"
     if [ -n "$DOCKER_USERNAME" ] && [ -n "$IMAGE_NAME" ] && [ -n "$IMAGE_TAG" ]; then
         echo -e "${YELLOW}当前配置: $FULL_IMAGE_NAME${NC}"
     else
@@ -867,9 +905,9 @@ show_menu() {
 }
 
 main() {
-    echo -e "${GREEN}欢迎使用 Komari Docker 镜像自动构建脚本 (AMD64架构专用 + 静态编译)!${NC}"
-    echo -e "${BLUE}此脚本专门为AMD64/x86_64架构优化，使用静态编译确保最佳兼容性${NC}"
-    echo -e "${BLUE}构建流程: 前端静态文件 → 后端项目 → 复制静态文件 → 静态编译二进制 → Docker镜像 → Docker Compose${NC}"
+    echo -e "${GREEN}欢迎使用 Komari Docker 镜像自动构建脚本 (AMD64架构专用 + SQLite支持)!${NC}"
+    echo -e "${BLUE}此脚本专门为AMD64/x86_64架构优化，启用CGO支持SQLite数据库${NC}"
+    echo -e "${BLUE}构建流程: 前端静态文件 → 后端项目 → 复制静态文件 → CGO编译二进制 → Docker镜像 → Docker Compose${NC}"
     echo
     
     if ! init_work_directory; then
