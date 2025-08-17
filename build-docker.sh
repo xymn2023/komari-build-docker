@@ -832,8 +832,8 @@ services:
       - GIN_MODE=release
       - KOMARI_DB_TYPE=sqlite
       - KOMARI_DB_FILE=/app/data/komari.db
-      - ADMIN_USERNAME=komari233
-      - ADMIN_PASSWORD=Fcx331fcx331
+      - ADMIN_USERNAME=admin
+      - ADMIN_PASSWORD=admin123
     restart: unless-stopped
 EOF
     
@@ -853,7 +853,7 @@ EOF
         echo -e "${GREEN}docker-compose restart komari${NC}"
         echo
         print_info "访问地址: http://localhost:25774"
-        print_info "管理员账号: komari233 / Fcx331fcx331"
+        print_info "管理员账号: admin / admin123"
         print_warning "请在首次登录后及时修改密码以确保安全！"
         print_info "架构信息: AMD64架构，CGO启用，动态获取官方版本标识"
         return 0
