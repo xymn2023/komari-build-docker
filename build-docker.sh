@@ -4,6 +4,7 @@
 # 作者: AI Assistant
 # 用途: 按照官方手工构建流程自动拉取、构建和推送komari项目的Docker镜像
 # 系统: Linux (Debian/Ubuntu)
+# 默认架构: x86_64/AMD64
 
 # 颜色定义
 RED='\033[0;31m'
@@ -24,6 +25,26 @@ FRONTEND_REPO="https://github.com/komari-monitor/komari-web.git"
 BACKEND_REPO="https://github.com/komari-monitor/komari.git"
 BUILDX_BUILDER="multiarch-builder"
 
+# 系统架构检测和默认设置
+SYSTEM_ARCH=$(uname -m)
+case $SYSTEM_ARCH in
+    x86_64)
+        DEFAULT_PLATFORM="linux/amd64"
+        PRIMARY_ARCH="amd64"
+        SECONDARY_ARCH="arm64"
+        ;;
+    aarch64|arm64)
+        DEFAULT_PLATFORM="linux/arm64"
+        PRIMARY_ARCH="arm64"
+        SECONDARY_ARCH="amd64"
+        ;;
+    *)
+        DEFAULT_PLATFORM="linux/amd64"
+        PRIMARY_ARCH="amd64"
+        SECONDARY_ARCH="arm64"
+        ;;
+esac
+
 # 打印带颜色的消息
 print_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
@@ -39,6 +60,16 @@ print_warning() {
 
 print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# 显示系统信息
+show_system_info() {
+    print_info "=== 系统信息检测 ==="
+    print_info "系统架构: $SYSTEM_ARCH"
+    print_info "默认平台: $DEFAULT_PLATFORM"
+    print_info "主要架构: $PRIMARY_ARCH"
+    print_info "次要架构: $SECONDARY_ARCH"
+    echo
 }
 
 # 初始化工作目录
@@ -147,23 +178,42 @@ check_requirements() {
 check_cross_compile_tools() {
     print_info "检查交叉编译工具..."
     
-    # 检查是否有ARM64交叉编译工具
-    if ! command -v aarch64-linux-gnu-gcc &> /dev/null; then
-        print_warning "ARM64交叉编译工具未安装，正在安装..."
-        install_cross_compile_tools
-    else
-        print_success "ARM64交叉编译工具已安装"
+    # 根据系统架构检查对应的交叉编译工具
+    if [ "$PRIMARY_ARCH" = "amd64" ] && [ "$SECONDARY_ARCH" = "arm64" ]; then
+        # AMD64系统，检查ARM64交叉编译工具
+        if ! command -v aarch64-linux-gnu-gcc &> /dev/null; then
+            print_warning "ARM64交叉编译工具未安装，正在安装..."
+            install_cross_compile_tools
+        else
+            print_success "ARM64交叉编译工具已安装"
+        fi
+    elif [ "$PRIMARY_ARCH" = "arm64" ] && [ "$SECONDARY_ARCH" = "amd64" ]; then
+        # ARM64系统，检查AMD64交叉编译工具
+        if ! command -v x86_64-linux-gnu-gcc &> /dev/null; then
+            print_warning "AMD64交叉编译工具未安装，正在安装..."
+            install_cross_compile_tools
+        else
+            print_success "AMD64交叉编译工具已安装"
+        fi
     fi
 }
 
 # 安装交叉编译工具
 install_cross_compile_tools() {
-    print_info "安装ARM64交叉编译工具..."
+    print_info "安装交叉编译工具..."
     
     if command -v apt-get &> /dev/null; then
         sudo apt-get update -qq
-        sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-        print_success "ARM64交叉编译工具安装完成"
+        
+        if [ "$PRIMARY_ARCH" = "amd64" ]; then
+            # 在AMD64系统上安装ARM64交叉编译工具
+            sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            print_success "ARM64交叉编译工具安装完成"
+        elif [ "$PRIMARY_ARCH" = "arm64" ]; then
+            # 在ARM64系统上安装AMD64交叉编译工具
+            sudo apt-get install -y gcc-x86-64-linux-gnu g++-x86-64-linux-gnu
+            print_success "AMD64交叉编译工具安装完成"
+        fi
     else
         print_warning "无法自动安装交叉编译工具，将禁用CGO进行构建"
     fi
@@ -221,9 +271,19 @@ install_tools_linux() {
                 "golang")
                     print_info "安装Go 1.21+..."
                     GO_VERSION="1.21.5"
-                    wget -q https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
+                    
+                    # 根据系统架构下载对应的Go版本
+                    if [ "$SYSTEM_ARCH" = "x86_64" ]; then
+                        GO_ARCH="amd64"
+                    elif [ "$SYSTEM_ARCH" = "aarch64" ]; then
+                        GO_ARCH="arm64"
+                    else
+                        GO_ARCH="amd64"  # 默认
+                    fi
+                    
+                    wget -q https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz
                     sudo rm -rf /usr/local/go
-                    sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
+                    sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-${GO_ARCH}.tar.gz
                     
                     # 设置环境变量
                     if ! grep -q '/usr/local/go/bin' ~/.bashrc; then
@@ -237,7 +297,7 @@ install_tools_linux() {
                     # 立即应用到当前会话
                     export PATH=$PATH:/usr/local/go/bin
                     
-                    rm go${GO_VERSION}.linux-amd64.tar.gz
+                    rm go${GO_VERSION}.linux-${GO_ARCH}.tar.gz
                     print_success "Go安装完成"
                     ;;
                 "git")
@@ -387,7 +447,7 @@ build_frontend() {
     return 0
 }
 
-# 步骤2: 构建后端（按照官方文档，修复交叉编译问题）
+# 步骤2: 构建后端（按照官方文档，优化架构支持）
 build_backend() {
     print_info "=== 步骤2: 构建后端 ==="
     
@@ -449,25 +509,44 @@ build_backend() {
     
     LDFLAGS="-s -w -X ${MODULE_NAME}/utils.CurrentVersion=${VERSION} -X ${MODULE_NAME}/utils.VersionHash=${VERSION_HASH}"
     
-    # 构建linux/amd64二进制文件
-    print_info "构建 linux/amd64 二进制文件..."
-    if GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-amd64; then
-        print_success "linux/amd64 二进制文件构建成功"
+    # 构建主要架构二进制文件（优先构建当前系统架构）
+    print_info "构建 linux/$PRIMARY_ARCH 二进制文件（主要架构）..."
+    if [ "$PRIMARY_ARCH" = "amd64" ]; then
+        if GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-amd64; then
+            print_success "linux/amd64 二进制文件构建成功"
+        else
+            print_error "linux/amd64 二进制文件构建失败"
+            return 1
+        fi
     else
-        print_error "linux/amd64 二进制文件构建失败"
-        return 1
+        if GOOS=linux GOARCH=arm64 CGO_ENABLED=1 go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-arm64; then
+            print_success "linux/arm64 二进制文件构建成功"
+        else
+            print_error "linux/arm64 二进制文件构建失败"
+            return 1
+        fi
     fi
     
-    # 构建linux/arm64二进制文件（修复交叉编译问题）
-    print_info "构建 linux/arm64 二进制文件..."
+    # 构建次要架构二进制文件（交叉编译）
+    print_info "构建 linux/$SECONDARY_ARCH 二进制文件（次要架构）..."
     
-    # 检查是否有ARM64交叉编译工具
-    if command -v aarch64-linux-gnu-gcc &> /dev/null; then
-        print_info "使用交叉编译工具构建ARM64二进制文件..."
-        if GOOS=linux GOARCH=arm64 CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc CXX=aarch64-linux-gnu-g++ go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-arm64; then
-            print_success "linux/arm64 二进制文件构建成功（交叉编译）"
+    if [ "$SECONDARY_ARCH" = "arm64" ]; then
+        # 构建ARM64版本
+        if command -v aarch64-linux-gnu-gcc &> /dev/null; then
+            print_info "使用交叉编译工具构建ARM64二进制文件..."
+            if GOOS=linux GOARCH=arm64 CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc CXX=aarch64-linux-gnu-g++ go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-arm64; then
+                print_success "linux/arm64 二进制文件构建成功（交叉编译）"
+            else
+                print_warning "交叉编译失败，尝试禁用CGO构建..."
+                if GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-arm64; then
+                    print_success "linux/arm64 二进制文件构建成功（禁用CGO）"
+                else
+                    print_error "linux/arm64 二进制文件构建失败"
+                    return 1
+                fi
+            fi
         else
-            print_warning "交叉编译失败，尝试禁用CGO构建..."
+            print_info "未找到ARM64交叉编译工具，禁用CGO构建ARM64二进制文件..."
             if GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-arm64; then
                 print_success "linux/arm64 二进制文件构建成功（禁用CGO）"
             else
@@ -476,12 +555,28 @@ build_backend() {
             fi
         fi
     else
-        print_info "未找到交叉编译工具，禁用CGO构建ARM64二进制文件..."
-        if GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-arm64; then
-            print_success "linux/arm64 二进制文件构建成功（禁用CGO）"
+        # 构建AMD64版本
+        if command -v x86_64-linux-gnu-gcc &> /dev/null; then
+            print_info "使用交叉编译工具构建AMD64二进制文件..."
+            if GOOS=linux GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-linux-gnu-gcc CXX=x86_64-linux-gnu-g++ go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-amd64; then
+                print_success "linux/amd64 二进制文件构建成功（交叉编译）"
+            else
+                print_warning "交叉编译失败，尝试禁用CGO构建..."
+                if GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-amd64; then
+                    print_success "linux/amd64 二进制文件构建成功（禁用CGO）"
+                else
+                    print_error "linux/amd64 二进制文件构建失败"
+                    return 1
+                fi
+            fi
         else
-            print_error "linux/arm64 二进制文件构建失败"
-            return 1
+            print_info "未找到AMD64交叉编译工具，禁用CGO构建AMD64二进制文件..."
+            if GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-amd64; then
+                print_success "linux/amd64 二进制文件构建成功（禁用CGO）"
+            else
+                print_error "linux/amd64 二进制文件构建失败"
+                return 1
+            fi
         fi
     fi
     
@@ -497,7 +592,7 @@ build_backend() {
     fi
 }
 
-# 构建Docker镜像（本地版本）
+# 构建Docker镜像（本地版本，优先构建当前架构）
 build_docker_image_local() {
     print_info "=== 步骤3: 构建Docker镜像 ==="
     
@@ -524,14 +619,14 @@ build_docker_image_local() {
         check_docker_buildx
     fi
     
-    # 构建本地镜像（仅amd64，避免多架构问题）
-    print_info "构建本地Docker镜像 (linux/amd64): $FULL_IMAGE_NAME"
+    # 构建本地镜像（优先构建当前系统架构）
+    print_info "构建本地Docker镜像 ($DEFAULT_PLATFORM): $FULL_IMAGE_NAME"
     if docker buildx build \
-        --platform linux/amd64 \
+        --platform "$DEFAULT_PLATFORM" \
         --tag "$FULL_IMAGE_NAME" \
         --load \
         . ; then
-        print_success "本地Docker镜像构建成功: $FULL_IMAGE_NAME"
+        print_success "本地Docker镜像构建成功: $FULL_IMAGE_NAME ($DEFAULT_PLATFORM)"
         
         # 如果不是latest标签，同时创建latest标签
         if [ "$IMAGE_TAG" != "latest" ]; then
@@ -600,6 +695,7 @@ build_docker_image() {
     # 构建并推送多架构镜像
     print_info "构建多架构Docker镜像并推送: $FULL_IMAGE_NAME"
     print_info "支持的架构: linux/amd64, linux/arm64"
+    print_info "主要架构: $DEFAULT_PLATFORM"
     
     if docker buildx build \
         --platform linux/amd64,linux/arm64 \
@@ -647,7 +743,7 @@ build_docker_image() {
     fi
 }
 
-# 生成docker-compose.yml文件（使用用户指定的配置）
+# 生成docker-compose.yml文件（针对当前系统架构优化）
 generate_docker_compose() {
     print_info "=== 生成docker-compose.yml文件 ==="
     
@@ -681,13 +777,14 @@ generate_docker_compose() {
         esac
     fi
     
-    # 生成docker-compose.yml内容（使用用户指定的配置）
-    print_info "生成docker-compose.yml文件..."
+    # 生成docker-compose.yml内容（针对当前系统架构优化）
+    print_info "生成docker-compose.yml文件（针对 $DEFAULT_PLATFORM 架构优化）..."
     cat > "$compose_file" << EOF
 version: '3.8'
 services:
   komari:
     image: $FULL_IMAGE_NAME
+    platform: $DEFAULT_PLATFORM  # 明确指定架构以确保兼容性
     container_name: komari
     ports:
       - "25774:25774"
@@ -698,9 +795,13 @@ services:
       - KOMARI_DB_TYPE=sqlite
       - KOMARI_DB_FILE=/app/data/komari.db
       # 自定义管理员账号密码
-      - ADMIN_USERNAME=admin
-      - ADMIN_PASSWORD=admin123
+      - ADMIN_USERNAME=komari233
+      - ADMIN_PASSWORD=Fcx331fcx331
     restart: unless-stopped
+    # 系统信息注释
+    # 目标架构: $DEFAULT_PLATFORM
+    # 系统架构: $SYSTEM_ARCH
+    # 构建时间: $(date '+%Y-%m-%d %H:%M:%S')
 EOF
     
     if [ -f "$compose_file" ]; then
@@ -708,6 +809,11 @@ EOF
         echo
         print_info "文件内容预览:"
         echo -e "${YELLOW}$(cat $compose_file)${NC}"
+        echo
+        print_info "架构优化说明:"
+        echo -e "${GREEN}✓ 已针对当前系统架构 ($SYSTEM_ARCH) 优化${NC}"
+        echo -e "${GREEN}✓ 明确指定平台为 $DEFAULT_PLATFORM${NC}"
+        echo -e "${GREEN}✓ 避免架构不匹配导致的运行错误${NC}"
         echo
         print_info "使用方法:"
         echo -e "${GREEN}# 创建数据目录${NC}"
@@ -825,6 +931,7 @@ get_image_info() {
     echo -e "  镜像名称: ${GREEN}$IMAGE_NAME${NC}"
     echo -e "  镜像标签: ${GREEN}$IMAGE_TAG${NC}"
     echo -e "  完整镜像名: ${GREEN}$FULL_IMAGE_NAME${NC}"
+    echo -e "  目标架构: ${GREEN}$DEFAULT_PLATFORM${NC}"
     echo
     
     print_info "信息是否正确? (y/n)"
@@ -857,6 +964,8 @@ save_config() {
             echo "DOCKER_USERNAME=$DOCKER_USERNAME" > "$config_file"
             echo "IMAGE_NAME=$IMAGE_NAME" >> "$config_file"
             echo "IMAGE_TAG=$IMAGE_TAG" >> "$config_file"
+            echo "DEFAULT_PLATFORM=$DEFAULT_PLATFORM" >> "$config_file"
+            echo "SYSTEM_ARCH=$SYSTEM_ARCH" >> "$config_file"
             print_success "配置已保存到 $config_file"
             ;;
         [Nn]* )
@@ -889,6 +998,9 @@ load_config() {
             echo -e "  镜像名称: ${GREEN}$IMAGE_NAME${NC}"
             echo -e "  镜像标签: ${GREEN}$IMAGE_TAG${NC}"
             echo -e "  完整镜像名: ${GREEN}$FULL_IMAGE_NAME${NC}"
+            if [ -n "$DEFAULT_PLATFORM" ]; then
+                echo -e "  保存的架构: ${GREEN}$DEFAULT_PLATFORM${NC}"
+            fi
             echo
             
             print_info "是否使用上次的配置? (y/n)"
@@ -965,11 +1077,6 @@ cleanup() {
                 print_success "后端项目目录已清理"
             fi
             
-            if [ -f ".docker-build-config" ]; then
-                rm -f ".docker-build-config"
-                print_success "配置文件已清理"
-            fi
-            
             print_success "临时文件清理完成"
             ;;
         [Nn]* )
@@ -986,8 +1093,10 @@ cleanup() {
 # 显示菜单
 show_menu() {
     echo
-    echo -e "${BLUE}=== Komari Docker 镜像构建脚本 (多架构支持 + Docker Compose) ===${NC}"
+    echo -e "${BLUE}=== Komari Docker 镜像构建脚本 (架构优化版) ===${NC}"
     echo -e "${YELLOW}工作目录: $WORK_DIR${NC}"
+    echo -e "${YELLOW}系统架构: $SYSTEM_ARCH${NC}"
+    echo -e "${YELLOW}默认平台: $DEFAULT_PLATFORM${NC}"
     if [ -n "$DOCKER_USERNAME" ] && [ -n "$IMAGE_NAME" ] && [ -n "$IMAGE_TAG" ]; then
         echo -e "${YELLOW}当前配置: $FULL_IMAGE_NAME${NC}"
     else
@@ -1011,10 +1120,13 @@ show_menu() {
 
 # 主函数
 main() {
-    echo -e "${GREEN}欢迎使用 Komari Docker 镜像自动构建脚本 (多架构支持 + Docker Compose)!${NC}"
-    echo -e "${BLUE}此脚本支持Linux多架构构建，已修复Docker Buildx配置问题${NC}"
+    echo -e "${GREEN}欢迎使用 Komari Docker 镜像自动构建脚本 (架构优化版)!${NC}"
+    echo -e "${BLUE}此脚本已针对您的系统架构进行优化，支持多架构构建${NC}"
     echo -e "${BLUE}构建流程: 前端静态文件 → 后端项目 → 复制静态文件 → 构建二进制 → Docker镜像 → Docker Compose${NC}"
     echo
+    
+    # 显示系统信息
+    show_system_info
     
     # 初始化工作目录
     if ! init_work_directory; then
@@ -1036,7 +1148,7 @@ main() {
         case $choice in
             1)
                 # 完整构建流程（按照官方手工构建步骤）
-                print_info "开始完整构建流程（按照官方手工构建步骤）..."
+                print_info "开始完整构建流程（针对 $DEFAULT_PLATFORM 架构优化）..."
                 
                 # 如果没有配置信息，先获取
                 if [ -z "$DOCKER_USERNAME" ] || [ -z "$IMAGE_NAME" ] || [ -z "$IMAGE_TAG" ]; then
@@ -1149,7 +1261,7 @@ main() {
                 exit 0
                 ;;
             *)
-                print_error "无效选项，请重新选择"
+            print_error "无效选项，请重新选择"
                 ;;
         esac
         
