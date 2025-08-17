@@ -4,7 +4,6 @@
 # 作者: AI Assistant
 # 用途: 自动化构建和推送komari项目的Docker镜像
 
-set -e  # 遇到错误立即退出
 
 # 颜色定义
 RED='\033[0;31m'
@@ -169,7 +168,8 @@ install_missing_tools() {
         for tool in "${tools[@]}"; do
             echo "  - $tool"
         done
-        return 1
+        print_warning "将跳过自动安装，继续执行脚本"
+        return 0
     fi
 }
 
@@ -390,13 +390,14 @@ check_docker_buildx() {
         
         # 创建并使用buildx实例
         docker buildx create --name multiarch --driver docker-container --use 2>/dev/null || true
-        docker buildx inspect --bootstrap
+        docker buildx inspect --bootstrap 2>/dev/null || true
         
         if docker buildx version &> /dev/null; then
             print_success "Docker Buildx已启用"
         else
             print_error "无法启用Docker Buildx，请检查Docker安装"
-            exit 1
+            print_warning "将跳过Docker Buildx功能，继续执行脚本"
+            return 1
         fi
     else
         print_success "Docker Buildx已可用: $(docker buildx version)"
@@ -603,24 +604,44 @@ build_frontend() {
     
     # 克隆前端项目
     print_info "克隆前端项目..."
-    git clone https://github.com/komari-monitor/komari-web web
+    if git clone https://github.com/komari-monitor/komari-web web; then
+        print_success "前端项目克隆成功"
+    else
+        print_error "前端项目克隆失败"
+        return 1
+    fi
     
     # 构建前端
     cd web
     print_info "安装前端依赖..."
-    npm install
+    if npm install; then
+        print_success "前端依赖安装成功"
+    else
+        print_error "前端依赖安装失败"
+        cd ..
+        return 1
+    fi
     
     print_info "构建前端项目..."
-    npm run build
+    if npm run build; then
+        print_success "前端项目构建成功"
+    else
+        print_error "前端项目构建失败"
+        cd ..
+        return 1
+    fi
     
     cd ..
     
     # 复制构建结果
     print_info "复制前端构建结果..."
     mkdir -p public/dist
-    cp -r web/dist/* public/dist/
-    
-    print_success "前端构建完成"
+    if cp -r web/dist/* public/dist/; then
+        print_success "前端构建完成"
+    else
+        print_error "前端构建结果复制失败"
+        return 1
+    fi
 }
 
 # 构建后端二进制文件
@@ -639,10 +660,20 @@ build_backend() {
     LDFLAGS="-s -w -X github.com/komari-monitor/komari/utils.CurrentVersion=${VERSION} -X github.com/komari-monitor/komari/utils.VersionHash=${VERSION_HASH}"
     
     print_info "构建 linux/amd64 二进制文件..."
-    GOARCH=amd64 go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-amd64
+    if GOARCH=amd64 go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-amd64; then
+        print_success "linux/amd64 二进制文件构建成功"
+    else
+        print_error "linux/amd64 二进制文件构建失败"
+        return 1
+    fi
     
     print_info "构建 linux/arm64 二进制文件..."
-    GOARCH=arm64 go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-arm64
+    if GOARCH=arm64 go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-arm64; then
+        print_success "linux/arm64 二进制文件构建成功"
+    else
+        print_error "linux/arm64 二进制文件构建失败"
+        return 1
+    fi
     
     print_success "后端二进制文件构建完成"
 }
@@ -652,31 +683,31 @@ build_docker_image() {
     print_info "开始构建Docker镜像: $FULL_IMAGE_NAME"
     
     # 构建多架构镜像
-    docker buildx build \
+    if docker buildx build \
         --platform linux/amd64,linux/arm64 \
         --tag "$FULL_IMAGE_NAME" \
         --load \
-        .
-    
-    if [ $? -eq 0 ]; then
+        . ; then
+        
         print_success "Docker镜像构建成功: $FULL_IMAGE_NAME"
         
         # 如果不是latest标签，同时创建latest标签
         if [ "$IMAGE_TAG" != "latest" ]; then
             local latest_image="${DOCKER_USERNAME}/${IMAGE_NAME}:latest"
             print_info "同时创建latest标签: $latest_image"
-            docker tag "$FULL_IMAGE_NAME" "$latest_image"
-            
-            if [ $? -eq 0 ]; then
+            if docker tag "$FULL_IMAGE_NAME" "$latest_image"; then
                 print_success "latest标签创建成功"
                 echo
                 print_info "可用的镜像标签:"
                 echo -e "  ${GREEN}$FULL_IMAGE_NAME${NC} (主标签)"
                 echo -e "  ${GREEN}$latest_image${NC} (latest标签)"
+            else
+                print_warning "latest标签创建失败，但主镜像构建成功"
             fi
         fi
     else
         print_error "Docker镜像构建失败"
+        print_warning "请检查错误信息并重试"
         return 1
     fi
 }
@@ -692,11 +723,9 @@ push_to_dockerhub() {
             print_info "开始推送镜像到Docker Hub..."
             
             # 检查是否已登录Docker Hub
-            if ! docker info | grep -q "Username: $DOCKER_USERNAME"; then
+            if ! docker info | grep -q "Username: $DOCKER_USERNAME" 2>/dev/null; then
                 print_info "请先登录Docker Hub (用户名: $DOCKER_USERNAME)"
-                docker login --username "$DOCKER_USERNAME"
-                
-                if [ $? -ne 0 ]; then
+                if ! docker login --username "$DOCKER_USERNAME"; then
                     print_error "Docker Hub登录失败"
                     return 1
                 fi
@@ -704,19 +733,15 @@ push_to_dockerhub() {
             
             # 推送主标签
             print_info "推送镜像: $FULL_IMAGE_NAME"
-            docker push "$FULL_IMAGE_NAME"
-            
-            if [ $? -eq 0 ]; then
+            if docker push "$FULL_IMAGE_NAME"; then
                 print_success "主标签推送成功: $FULL_IMAGE_NAME"
                 
                 # 如果存在latest标签且不是latest，也推送latest
                 if [ "$IMAGE_TAG" != "latest" ]; then
                     local latest_image="${DOCKER_USERNAME}/${IMAGE_NAME}:latest"
-                    if docker images --format "table {{.Repository}}:{{.Tag}}" | grep -q "$latest_image"; then
+                    if docker images --format "table {{.Repository}}:{{.Tag}}" | grep -q "$latest_image" 2>/dev/null; then
                         print_info "推送latest标签: $latest_image"
-                        docker push "$latest_image"
-                        
-                        if [ $? -eq 0 ]; then
+                        if docker push "$latest_image"; then
                             print_success "latest标签推送成功"
                         else
                             print_warning "latest标签推送失败"
