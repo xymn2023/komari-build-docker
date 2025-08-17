@@ -698,8 +698,8 @@ services:
       - KOMARI_DB_TYPE=sqlite
       - KOMARI_DB_FILE=/app/data/komari.db
       # 自定义管理员账号密码
-      - ADMIN_USERNAME=komari233
-      - ADMIN_PASSWORD=Fcx331fcx331
+      - ADMIN_USERNAME=admin
+      - ADMIN_PASSWORD=admin123
     restart: unless-stopped
 EOF
     
