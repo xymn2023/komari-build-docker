@@ -22,6 +22,7 @@ FRONTEND_PROJECT="komari-web"
 BACKEND_PROJECT="komari"
 FRONTEND_REPO="https://github.com/komari-monitor/komari-web.git"
 BACKEND_REPO="https://github.com/komari-monitor/komari.git"
+BUILDX_BUILDER="multiarch-builder"
 
 # 打印带颜色的消息
 print_info() {
