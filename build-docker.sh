@@ -788,8 +788,8 @@ services:
       - GIN_MODE=release
       - KOMARI_DB_TYPE=sqlite
       - KOMARI_DB_FILE=/app/data/komari.db
-      - ADMIN_USERNAME=komari233
-      - ADMIN_PASSWORD=Fcx331fcx331
+      - ADMIN_USERNAME=adnin
+      - ADMIN_PASSWORD=admin123
     restart: unless-stopped
 EOF
     
