@@ -41,10 +41,11 @@ check_requirements() {
     print_info "检查必要的工具..."
     local missing_tools=()
     local need_install=false
+    local need_reload_env=false
     
     # 检查Docker
     if ! command -v docker &> /dev/null; then
-        print_warning "Docker未安装"
+        print_warning "Docker未安装，正在自动安装..."
         missing_tools+=("docker")
         need_install=true
     else
@@ -53,7 +54,7 @@ check_requirements() {
     
     # 检查Node.js
     if ! command -v node &> /dev/null; then
-        print_warning "Node.js未安装"
+        print_warning "Node.js未安装，正在自动安装..."
         missing_tools+=("nodejs")
         need_install=true
     else
@@ -62,7 +63,7 @@ check_requirements() {
     
     # 检查npm
     if ! command -v npm &> /dev/null; then
-        print_warning "npm未安装"
+        print_warning "npm未安装，正在自动安装..."
         missing_tools+=("npm")
         need_install=true
     else
@@ -71,7 +72,7 @@ check_requirements() {
     
     # 检查Go
     if ! command -v go &> /dev/null; then
-        print_warning "Go未安装"
+        print_warning "Go未安装，正在自动安装..."
         missing_tools+=("golang")
         need_install=true
     else
@@ -80,229 +81,303 @@ check_requirements() {
     
     # 检查git
     if ! command -v git &> /dev/null; then
-        print_warning "Git未安装"
+        print_warning "Git未安装，正在自动安装..."
         missing_tools+=("git")
         need_install=true
     else
         print_success "Git已安装: $(git --version)"
     fi
     
-    # 如果有缺失的工具，询问是否自动安装
+    # 如果有缺失的工具，自动安装
     if [ "$need_install" = true ]; then
         echo
-        print_warning "发现以下工具未安装: ${missing_tools[*]}"
-        echo
-        print_info "是否自动安装缺失的工具? (y/n)"
-        read -p "请选择: " install_choice
-        
-        case $install_choice in
-            [Yy]* )
-                install_missing_tools "${missing_tools[@]}"
-                ;;
-            [Nn]* )
-                print_error "缺少必要工具，无法继续执行"
-                print_info "请手动安装以下工具后重新运行脚本:"
-                for tool in "${missing_tools[@]}"; do
-                    echo "  - $tool"
-                done
-                exit 1
-                ;;
-            * )
-                print_error "无效选择，退出脚本"
-                exit 1
-                ;;
-        esac
+        print_info "开始自动安装缺失的工具: ${missing_tools[*]}"
+        install_missing_tools "${missing_tools[@]}"
+        need_reload_env=true
     else
         print_success "所有必要工具检查通过"
     fi
     
     # 检查Docker Buildx
     check_docker_buildx
+    
+    # 如果安装了新工具，重新加载环境变量
+    if [ "$need_reload_env" = true ]; then
+        reload_environment
+    fi
 }
 
-# 安装缺失的工具
+# 重新加载环境变量
+reload_environment() {
+    print_info "重新加载环境变量..."
+    
+    # 重新加载bashrc
+    if [ -f ~/.bashrc ]; then
+        source ~/.bashrc
+    fi
+    
+    # 重新加载profile
+    if [ -f ~/.profile ]; then
+        source ~/.profile
+    fi
+    
+    # 更新当前会话的PATH
+    export PATH="/usr/local/go/bin:$PATH"
+    export PATH="/usr/local/bin:$PATH"
+    
+    print_success "环境变量已重新加载"
+    
+    # 重新验证工具安装
+    print_info "重新验证工具安装状态..."
+    
+    if command -v docker &> /dev/null; then
+        print_success "Docker验证成功: $(docker --version)"
+    fi
+    
+    if command -v node &> /dev/null; then
+        print_success "Node.js验证成功: $(node --version)"
+    fi
+    
+    if command -v npm &> /dev/null; then
+        print_success "npm验证成功: $(npm --version)"
+    fi
+    
+    if command -v go &> /dev/null; then
+        print_success "Go验证成功: $(go version)"
+    fi
+    
+    if command -v git &> /dev/null; then
+        print_success "Git验证成功: $(git --version)"
+    fi
+}
+
+# 安装缺失的工具（无需用户确认）
 install_missing_tools() {
     local tools=("$@")
-    print_info "开始安装缺失的工具..."
+    print_info "开始自动安装缺失的工具..."
     
     # 检测操作系统
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        install_tools_linux "${tools[@]}"
+        install_tools_linux_auto "${tools[@]}"
     elif [[ "$OSTYPE" == "darwin"* ]]; then
-        install_tools_macos "${tools[@]}"
+        install_tools_macos_auto "${tools[@]}"
     elif [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "cygwin" ]] || [[ "$OSTYPE" == "win32" ]]; then
-        install_tools_windows "${tools[@]}"
+        install_tools_windows_auto "${tools[@]}"
     else
         print_error "不支持的操作系统: $OSTYPE"
         print_info "请手动安装以下工具:"
         for tool in "${tools[@]}"; do
             echo "  - $tool"
         done
-        exit 1
+        return 1
     fi
 }
 
-# Linux系统安装工具
-install_tools_linux() {
+# Linux系统自动安装工具
+install_tools_linux_auto() {
     local tools=("$@")
     
     # 检测包管理器
     if command -v apt-get &> /dev/null; then
-        print_info "使用apt-get安装工具..."
-        sudo apt-get update
+        print_info "使用apt-get自动安装工具..."
+        
+        # 更新包列表
+        print_info "更新包列表..."
+        sudo apt-get update -qq
         
         for tool in "${tools[@]}"; do
             case $tool in
                 "docker")
-                    print_info "安装Docker..."
+                    print_info "自动安装Docker..."
                     curl -fsSL https://get.docker.com -o get-docker.sh
-                    sudo sh get-docker.sh
+                    sudo sh get-docker.sh > /dev/null 2>&1
                     sudo usermod -aG docker $USER
                     rm get-docker.sh
-                    print_warning "Docker安装完成，请重新登录以使用Docker命令"
+                    
+                    # 启动Docker服务
+                    sudo systemctl start docker > /dev/null 2>&1
+                    sudo systemctl enable docker > /dev/null 2>&1
+                    
+                    print_success "Docker安装完成"
                     ;;
                 "nodejs")
-                    print_info "安装Node.js..."
-                    curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
-                    sudo apt-get install -y nodejs
+                    print_info "自动安装Node.js..."
+                    curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - > /dev/null 2>&1
+                    sudo apt-get install -y nodejs > /dev/null 2>&1
+                    print_success "Node.js安装完成"
                     ;;
                 "npm")
                     print_info "npm通常随Node.js一起安装"
                     ;;
                 "golang")
-                    print_info "安装Go..."
-                    wget https://go.dev/dl/go1.21.0.linux-amd64.tar.gz
+                    print_info "自动安装Go..."
+                    
+                    # 下载最新版本的Go
+                    GO_VERSION="1.21.5"
+                    wget -q https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
+                    
+                    # 删除旧版本并安装新版本
                     sudo rm -rf /usr/local/go
-                    sudo tar -C /usr/local -xzf go1.21.0.linux-amd64.tar.gz
-                    echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
-                    rm go1.21.0.linux-amd64.tar.gz
-                    print_warning "Go安装完成，请运行 'source ~/.bashrc' 或重新打开终端"
+                    sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
+                    
+                    # 设置环境变量
+                    if ! grep -q '/usr/local/go/bin' ~/.bashrc; then
+                        echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+                    fi
+                    
+                    if ! grep -q '/usr/local/go/bin' ~/.profile; then
+                        echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.profile
+                    fi
+                    
+                    # 立即应用到当前会话
+                    export PATH=$PATH:/usr/local/go/bin
+                    
+                    rm go${GO_VERSION}.linux-amd64.tar.gz
+                    print_success "Go安装完成并已设置环境变量"
                     ;;
                 "git")
-                    print_info "安装Git..."
-                    sudo apt-get install -y git
+                    print_info "自动安装Git..."
+                    sudo apt-get install -y git > /dev/null 2>&1
+                    print_success "Git安装完成"
                     ;;
             esac
         done
         
     elif command -v yum &> /dev/null; then
-        print_info "使用yum安装工具..."
+        print_info "使用yum自动安装工具..."
         
         for tool in "${tools[@]}"; do
             case $tool in
                 "docker")
-                    print_info "安装Docker..."
-                    sudo yum install -y docker
-                    sudo systemctl start docker
-                    sudo systemctl enable docker
+                    print_info "自动安装Docker..."
+                    sudo yum install -y docker > /dev/null 2>&1
+                    sudo systemctl start docker > /dev/null 2>&1
+                    sudo systemctl enable docker > /dev/null 2>&1
                     sudo usermod -aG docker $USER
+                    print_success "Docker安装完成"
                     ;;
                 "nodejs")
-                    print_info "安装Node.js..."
-                    curl -fsSL https://rpm.nodesource.com/setup_lts.x | sudo bash -
-                    sudo yum install -y nodejs
+                    print_info "自动安装Node.js..."
+                    curl -fsSL https://rpm.nodesource.com/setup_lts.x | sudo bash - > /dev/null 2>&1
+                    sudo yum install -y nodejs > /dev/null 2>&1
+                    print_success "Node.js安装完成"
                     ;;
                 "golang")
-                    print_info "安装Go..."
-                    sudo yum install -y golang
+                    print_info "自动安装Go..."
+                    sudo yum install -y golang > /dev/null 2>&1
+                    print_success "Go安装完成"
                     ;;
                 "git")
-                    print_info "安装Git..."
-                    sudo yum install -y git
+                    print_info "自动安装Git..."
+                    sudo yum install -y git > /dev/null 2>&1
+                    print_success "Git安装完成"
                     ;;
             esac
         done
     else
         print_error "未找到支持的包管理器 (apt-get/yum)"
-        exit 1
+        return 1
     fi
+    
+    print_success "所有工具安装完成"
 }
 
-# macOS系统安装工具
-install_tools_macos() {
+# macOS系统自动安装工具
+install_tools_macos_auto() {
     local tools=("$@")
     
-    # 检查是否安装了Homebrew
+    # 检查是否安装了Homebrew，如果没有则自动安装
     if ! command -v brew &> /dev/null; then
-        print_info "安装Homebrew..."
-        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+        print_info "自动安装Homebrew..."
+        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" > /dev/null 2>&1
+        
+        # 设置Homebrew环境变量
+        if [[ -f "/opt/homebrew/bin/brew" ]]; then
+            eval "$(/opt/homebrew/bin/brew shellenv)"
+            echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
+        fi
+        
+        print_success "Homebrew安装完成"
     fi
     
-    print_info "使用Homebrew安装工具..."
+    print_info "使用Homebrew自动安装工具..."
     
     for tool in "${tools[@]}"; do
         case $tool in
             "docker")
-                print_info "安装Docker..."
-                brew install --cask docker
-                print_warning "请启动Docker Desktop应用程序"
+                print_info "自动安装Docker..."
+                brew install --cask docker > /dev/null 2>&1
+                print_success "Docker安装完成，请手动启动Docker Desktop"
                 ;;
             "nodejs")
-                print_info "安装Node.js..."
-                brew install node
+                print_info "自动安装Node.js..."
+                brew install node > /dev/null 2>&1
+                print_success "Node.js安装完成"
                 ;;
             "golang")
-                print_info "安装Go..."
-                brew install go
+                print_info "自动安装Go..."
+                brew install go > /dev/null 2>&1
+                print_success "Go安装完成"
                 ;;
             "git")
-                print_info "安装Git..."
-                brew install git
+                print_info "自动安装Git..."
+                brew install git > /dev/null 2>&1
+                print_success "Git安装完成"
                 ;;
         esac
     done
 }
 
-# Windows系统安装工具
-install_tools_windows() {
+# Windows系统自动安装工具
+install_tools_windows_auto() {
     local tools=("$@")
     
-    print_info "Windows系统检测到，建议使用以下方式安装:"
-    echo
+    print_info "Windows系统检测到，尝试使用winget自动安装..."
     
     for tool in "${tools[@]}"; do
         case $tool in
             "docker")
-                print_info "Docker Desktop for Windows:"
-                echo "  下载地址: https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
-                echo "  或使用winget: winget install Docker.DockerDesktop"
+                print_info "自动安装Docker Desktop..."
+                if command -v winget &> /dev/null; then
+                    winget install Docker.DockerDesktop --silent > /dev/null 2>&1
+                    print_success "Docker Desktop安装完成"
+                else
+                    print_warning "winget不可用，请手动安装Docker Desktop"
+                    print_info "下载地址: https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
+                fi
                 ;;
             "nodejs")
-                print_info "Node.js for Windows:"
-                echo "  下载地址: https://nodejs.org/en/download/"
-                echo "  或使用winget: winget install OpenJS.NodeJS"
+                print_info "自动安装Node.js..."
+                if command -v winget &> /dev/null; then
+                    winget install OpenJS.NodeJS --silent > /dev/null 2>&1
+                    print_success "Node.js安装完成"
+                else
+                    print_warning "winget不可用，请手动安装Node.js"
+                    print_info "下载地址: https://nodejs.org/en/download/"
+                fi
                 ;;
             "golang")
-                print_info "Go for Windows:"
-                echo "  下载地址: https://golang.org/dl/"
-                echo "  或使用winget: winget install GoLang.Go"
+                print_info "自动安装Go..."
+                if command -v winget &> /dev/null; then
+                    winget install GoLang.Go --silent > /dev/null 2>&1
+                    print_success "Go安装完成"
+                else
+                    print_warning "winget不可用，请手动安装Go"
+                    print_info "下载地址: https://golang.org/dl/"
+                fi
                 ;;
             "git")
-                print_info "Git for Windows:"
-                echo "  下载地址: https://git-scm.com/download/win"
-                echo "  或使用winget: winget install Git.Git"
+                print_info "自动安装Git..."
+                if command -v winget &> /dev/null; then
+                    winget install Git.Git --silent > /dev/null 2>&1
+                    print_success "Git安装完成"
+                else
+                    print_warning "winget不可用，请手动安装Git"
+                    print_info "下载地址: https://git-scm.com/download/win"
+                fi
                 ;;
         esac
-        echo
     done
-    
-    print_info "是否已手动安装完成? (y/n)"
-    read -p "请选择: " manual_install
-    
-    case $manual_install in
-        [Yy]* )
-            print_info "重新检查工具安装状态..."
-            check_requirements
-            ;;
-        [Nn]* )
-            print_error "请安装必要工具后重新运行脚本"
-            exit 1
-            ;;
-        * )
-            print_error "无效选择，退出脚本"
-            exit 1
-            ;;
-    esac
 }
 
 # 检查Docker Buildx
@@ -602,7 +677,7 @@ build_docker_image() {
         fi
     else
         print_error "Docker镜像构建失败"
-        exit 1
+        return 1
     fi
 }
 
@@ -661,7 +736,7 @@ push_to_dockerhub() {
                 echo -e "${BLUE}https://hub.docker.com/r/$DOCKER_USERNAME/$IMAGE_NAME${NC}"
             else
                 print_error "镜像推送失败"
-                exit 1
+                return 1
             fi
             ;;
         [Nn]* )
@@ -724,7 +799,7 @@ show_menu() {
     echo
 }
 
-# 主函数
+# 主函数（修改版本 - 不自动退出）
 main() {
     echo -e "${GREEN}欢迎使用 Komari Docker 镜像构建脚本!${NC}"
     
@@ -734,6 +809,7 @@ main() {
     # 尝试加载已保存的配置
     load_config
     
+    # 进入主循环，不自动退出
     while true; do
         show_menu
         read -p "请输入选项 (0-7): " choice
@@ -751,22 +827,29 @@ main() {
                 push_to_dockerhub
                 save_config
                 cleanup
-                break
+                
+                # 构建完成后不退出，继续显示菜单
+                echo
+                print_success "构建流程完成！"
+                print_info "您可以继续使用其他功能或选择0退出"
                 ;;
             2)
                 get_image_info
                 ;;
             3)
                 build_frontend
+                print_success "前端构建完成！"
                 ;;
             4)
                 build_backend
+                print_success "后端构建完成！"
                 ;;
             5)
                 if [ -z "$DOCKER_USERNAME" ] || [ -z "$IMAGE_NAME" ] || [ -z "$IMAGE_TAG" ]; then
                     get_image_info
                 fi
                 build_docker_image
+                print_success "Docker镜像构建完成！"
                 ;;
             6)
                 if [ -z "$DOCKER_USERNAME" ] || [ -z "$IMAGE_NAME" ] || [ -z "$IMAGE_TAG" ]; then
@@ -778,7 +861,8 @@ main() {
                 cleanup
                 ;;
             0)
-                print_info "退出脚本"
+                print_info "感谢使用 Komari Docker 构建脚本！"
+                print_info "再见！"
                 exit 0
                 ;;
             *)
@@ -789,8 +873,6 @@ main() {
         echo
         read -p "按回车键继续..."
     done
-    
-    print_success "脚本执行完成!"
 }
 
 # 运行主函数
