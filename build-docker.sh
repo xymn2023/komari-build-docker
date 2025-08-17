@@ -37,6 +37,10 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+print_debug() {
+    echo -e "${YELLOW}[DEBUG]${NC} $1"
+}
+
 # 清理构建器函数
 cleanup_builder() {
     if [ "$BUILDER_CREATED" = true ]; then
@@ -87,7 +91,7 @@ get_official_version_info() {
         return 1
     fi
     
-    print_info "获取到官方tag: $tag_name"
+    print_debug "获取到官方tag: $tag_name"
     
     # 使用Tags API获取该tag对应的提交哈希
     local tags_api="https://api.github.com/repos/komari-monitor/komari/git/refs/tags/${tag_name}"
@@ -104,8 +108,8 @@ get_official_version_info() {
     local short_hash=$(echo "$commit_sha" | cut -c1-7)
     
     print_success "获取官方版本信息成功:"
-    print_info "  官方版本: $clean_version"
-    print_info "  官方哈希: $short_hash"
+    print_debug "  官方版本: $clean_version"
+    print_debug "  官方哈希: $short_hash"
     
     # 返回版本号和哈希（空格分隔）
     echo "$clean_version $short_hash"
@@ -117,6 +121,8 @@ generate_custom_version() {
     local official_version="$1"
     local official_hash="$2"
     local current_hash="$3"
+    
+    print_debug "版本生成参数: 官方=$official_version, 官方哈希=$official_hash, 当前哈希=$current_hash"
     
     # 检查当前代码是否与官方版本一致
     if [ "$current_hash" = "$official_hash" ]; then
@@ -133,7 +139,7 @@ generate_custom_version() {
 init_work_directory() {
     print_info "初始化工作目录..."
     WORK_DIR="$(pwd)"
-    print_info "工作目录: $WORK_DIR"
+    print_debug "工作目录: $WORK_DIR"
     
     if [ ! -w "$WORK_DIR" ]; then
         print_error "当前目录没有写权限: $WORK_DIR"
@@ -439,9 +445,13 @@ build_backend() {
     local official_version=$(echo "$version_info" | awk '{print $1}')
     local official_hash=$(echo "$version_info" | awk '{print $2}')
     
+    print_debug "解析版本信息: '$version_info' -> 版本='$official_version', 哈希='$official_hash'"
+    
     # 获取当前代码信息
     local current_hash=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
     local current_full_hash=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+    
+    print_debug "当前代码信息: 短哈希='$current_hash', 完整哈希='$current_full_hash'"
     
     # 生成版本标识
     local version=$(generate_custom_version "$official_version" "$official_hash" "$current_hash")
@@ -453,28 +463,108 @@ build_backend() {
     print_info "  完整哈希: $current_full_hash"
     
     local module_name=$(grep '^module' go.mod | awk '{print $2}')
-    print_info "Go模块: $module_name"
+    print_debug "Go模块名: $module_name"
     
-    # 注入版本信息到二进制文件
-    local ldflags="-s -w -X ${module_name}/utils.CurrentVersion=${version} -X ${module_name}/utils.VersionHash=${current_full_hash}"
+    # 检查Go环境
+    print_debug "Go环境检查:"
+    print_debug "  Go版本: $(go version)"
+    print_debug "  GOPATH: $(go env GOPATH)"
+    print_debug "  GOROOT: $(go env GOROOT)"
+    print_debug "  CGO_ENABLED: $(go env CGO_ENABLED)"
     
-    print_info "构建 linux/amd64 二进制文件（启用CGO支持SQLite）..."
-    print_info "版本标识将显示为: $version ($current_hash)"
+    # 修复LDFLAGS格式 - 使用正确的引号处理
+    local version_flag="${module_name}/utils.CurrentVersion=${version}"
+    local hash_flag="${module_name}/utils.VersionHash=${current_full_hash}"
     
-    if CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$ldflags" -o komari-linux-amd64; then
-        print_success "linux/amd64 二进制文件构建成功（CGO启用）"
+    print_debug "LDFLAGS组件:"
+    print_debug "  版本标志: $version_flag"
+    print_debug "  哈希标志: $hash_flag"
+    
+    print_info "开始编译过程..."
+    
+    # 设置编译环境变量
+    export CGO_ENABLED=1
+    export GOOS=linux
+    export GOARCH=amd64
+    
+    print_debug "编译环境变量:"
+    print_debug "  CGO_ENABLED=$CGO_ENABLED"
+    print_debug "  GOOS=$GOOS"
+    print_debug "  GOARCH=$GOARCH"
+    
+    # 先进行基础编译测试
+    print_info "执行基础编译测试..."
+    if go build -o komari-test-basic 2>/dev/null; then
+        print_success "基础编译测试通过"
+        rm -f komari-test-basic
+        
+        # 测试带简单LDFLAGS的编译
+        print_info "测试简单LDFLAGS编译..."
+        if go build -ldflags="-s -w" -o komari-test-simple 2>/dev/null; then
+            print_success "简单LDFLAGS编译测试通过"
+            rm -f komari-test-simple
+            
+            # 执行完整编译
+            print_info "执行完整编译（包含版本信息）..."
+            print_debug "执行命令: go build -trimpath -ldflags=\"-s -w -X '$version_flag' -X '$hash_flag'\" -o komari-linux-amd64"
+            
+            if go build -trimpath -ldflags="-s -w -X '$version_flag' -X '$hash_flag'" -o komari-linux-amd64; then
+                print_success "完整编译成功（包含版本信息）"
+            else
+                print_warning "完整编译失败，尝试不带trimpath..."
+                if go build -ldflags="-s -w -X '$version_flag' -X '$hash_flag'" -o komari-linux-amd64; then
+                    print_success "编译成功（不带trimpath）"
+                else
+                    print_warning "带版本信息编译失败，使用简化编译..."
+                    if go build -ldflags="-s -w" -o komari-linux-amd64; then
+                        print_warning "简化编译成功（版本信息可能不完整）"
+                    else
+                        print_error "所有编译尝试都失败了"
+                        return 1
+                    fi
+                fi
+            fi
+        else
+            print_warning "简单LDFLAGS编译失败，尝试最基础编译..."
+            if go build -o komari-linux-amd64; then
+                print_warning "基础编译成功（无优化，无版本信息）"
+            else
+                print_error "基础编译失败"
+                return 1
+            fi
+        fi
     else
-        print_error "linux/amd64 二进制文件构建失败"
+        print_error "基础编译测试失败，请检查Go环境和项目代码"
+        print_debug "尝试显示编译错误:"
+        go build -o komari-test-debug 2>&1 | head -20
         return 1
     fi
     
+    # 验证编译结果
     if [ -f "komari-linux-amd64" ]; then
         print_success "后端二进制文件构建完成"
-        print_info "生成的文件:"
+        print_info "生成的文件信息:"
         ls -la komari-linux-amd64
-        print_info "版本标识: $version"
-        print_info "基于官方版本: $official_version"
-        print_info "CGO已启用，支持SQLite数据库"
+        
+        # 检查文件类型
+        if command -v file &> /dev/null; then
+            print_debug "文件类型: $(file komari-linux-amd64)"
+        fi
+        
+        # 尝试获取版本信息
+        print_info "尝试验证版本信息..."
+        if ./komari-linux-amd64 --version 2>/dev/null; then
+            print_success "版本信息验证成功"
+        else
+            print_warning "无法验证版本信息（可能是正常的）"
+        fi
+        
+        print_info "编译总结:"
+        print_info "  版本标识: $version"
+        print_info "  基于官方版本: $official_version"
+        print_info "  CGO已启用，支持SQLite数据库"
+        print_info "  目标架构: linux/amd64"
+        
         return 0
     else
         print_error "二进制文件生成失败"
@@ -972,7 +1062,7 @@ cleanup() {
 
 show_menu() {
     echo
-    echo -e "${BLUE}=== Komari Docker 镜像构建脚本 (AMD64架构专用 + 官方版本标识 + 自动清理) ===${NC}"
+    echo -e "${BLUE}=== Komari Docker 镜像构建脚本 (AMD64架构专用 + 官方版本标识 + 自动清理 + 调试增强) ===${NC}"
     echo -e "${YELLOW}工作目录: $WORK_DIR${NC}"
     echo -e "${YELLOW}目标架构: linux/amd64 (CGO启用 + 官方版本标识)${NC}"
     echo -e "${YELLOW}构建器管理: 自动创建和清理 $BUILDX_BUILDER${NC}"
@@ -986,7 +1076,7 @@ show_menu() {
     echo "1) 完整构建流程 (推荐) - 按照官方手工构建步骤 + 官方版本标识"
     echo "2) 配置镜像信息"
     echo "3) 仅构建前端静态文件"
-    echo "4) 仅构建后端 (包含官方版本标识)"
+    echo "4) 仅构建后端 (包含官方版本标识 + 调试信息)"
     echo "5) 仅构建Docker镜像 (本地)"
     echo "6) 构建并推送Docker镜像"
     echo "7) 仅推送到Docker Hub"
@@ -999,10 +1089,11 @@ show_menu() {
 }
 
 main() {
-    echo -e "${GREEN}欢迎使用 Komari Docker 镜像自动构建脚本 (AMD64架构专用 + 官方版本标识 + 自动清理)!${NC}"
+    echo -e "${GREEN}欢迎使用 Komari Docker 镜像自动构建脚本 (AMD64架构专用 + 官方版本标识 + 自动清理 + 调试增强)!${NC}"
     echo -e "${BLUE}此脚本专门为AMD64/x86_64架构优化，启用CGO支持SQLite数据库${NC}"
     echo -e "${BLUE}新增功能: 自动获取官方版本号，生成基于官方版本的自定义标识${NC}"
     echo -e "${BLUE}构建器管理: 脚本启动时创建，退出时自动清理 $BUILDX_BUILDER${NC}"
+    echo -e "${BLUE}调试增强: 详细的编译过程调试信息，多重编译回退机制${NC}"
     echo -e "${BLUE}构建流程: 前端静态文件 → 后端项目 → 复制静态文件 → CGO编译二进制 → Docker镜像 → Docker Compose${NC}"
     echo
     
@@ -1020,7 +1111,7 @@ main() {
         
         case $choice in
             1)
-                print_info "开始完整构建流程（按照官方手工构建步骤 + 官方版本标识）..."
+                print_info "开始完整构建流程（按照官方手工构建步骤 + 官方版本标识 + 调试增强）..."
                 
                 if [ -z "$DOCKER_USERNAME" ] || [ -z "$IMAGE_NAME" ] || [ -z "$IMAGE_TAG" ]; then
                     get_image_info
