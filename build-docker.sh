@@ -77,37 +77,69 @@ trap cleanup_on_exit EXIT
 # 设置中断信号的清理陷阱
 trap 'echo; print_warning "检测到中断信号，正在清理..."; cleanup_on_exit; exit 130' INT TERM
 
-# 从GitHub API获取官方最新版本信息
+# 从GitHub API获取官方最新版本信息 - 修复版本
 get_official_version_info() {
     print_info "从GitHub API获取官方最新版本信息..."
     
     # 先获取最新release的tag名称
     local latest_api="https://api.github.com/repos/komari-monitor/komari/releases/latest"
-    local tag_name=$(curl -s "$latest_api" | grep '"tag_name":' | sed -E 's/.*"tag_name":\s*"([^"]+)".*/\1/' | head -1)
+    print_debug "调用API: $latest_api"
     
-    if [ -z "$tag_name" ] || [ "$tag_name" = "null" ]; then
-        print_error "无法从GitHub API获取版本信息，请检查网络连接"
+    local api_response=$(curl -s "$latest_api")
+    if [ $? -ne 0 ] || [ -z "$api_response" ]; then
+        print_error "无法连接到GitHub API，请检查网络连接"
         return 1
     fi
     
-    print_debug "获取到官方tag: $tag_name"
+    print_debug "API响应长度: ${#api_response} 字符"
+    
+    local tag_name=$(echo "$api_response" | grep '"tag_name":' | sed -E 's/.*"tag_name":\s*"([^"]+)".*/\1/' | head -1)
+    
+    if [ -z "$tag_name" ] || [ "$tag_name" = "null" ]; then
+        print_error "无法从GitHub API解析版本标签"
+        print_debug "API响应片段: $(echo "$api_response" | head -5)"
+        return 1
+    fi
+    
+    print_debug "解析到的tag: '$tag_name'"
     
     # 使用Tags API获取该tag对应的提交哈希
     local tags_api="https://api.github.com/repos/komari-monitor/komari/git/refs/tags/${tag_name}"
-    local commit_sha=$(curl -s "$tags_api" | grep '"sha":' | head -1 | sed -E 's/.*"sha":\s*"([^"]+)".*/\1/')
+    print_debug "调用Tags API: $tags_api"
     
-    if [ -z "$commit_sha" ] || [ "$commit_sha" = "null" ]; then
-        print_error "无法从GitHub API获取提交哈希，请检查网络连接"
+    local tags_response=$(curl -s "$tags_api")
+    if [ $? -ne 0 ] || [ -z "$tags_response" ]; then
+        print_error "无法获取标签信息，请检查网络连接"
         return 1
     fi
+    
+    print_debug "Tags API响应长度: ${#tags_response} 字符"
+    
+    local commit_sha=$(echo "$tags_response" | grep '"sha":' | head -1 | sed -E 's/.*"sha":\s*"([^"]+)".*/\1/')
+    
+    if [ -z "$commit_sha" ] || [ "$commit_sha" = "null" ]; then
+        print_error "无法从GitHub API解析提交哈希"
+        print_debug "Tags API响应片段: $(echo "$tags_response" | head -5)"
+        return 1
+    fi
+    
+    print_debug "解析到的完整SHA: '$commit_sha'"
     
     # 清理版本号和截取哈希
     local clean_version=$(echo "$tag_name" | sed 's/^v//')
     local short_hash=$(echo "$commit_sha" | cut -c1-7)
     
+    # 验证数据完整性
+    if [ -z "$clean_version" ] || [ -z "$short_hash" ] || [ ${#short_hash} -ne 7 ]; then
+        print_error "版本信息解析失败"
+        print_debug "  清理后版本: '$clean_version'"
+        print_debug "  短哈希: '$short_hash' (长度: ${#short_hash})"
+        return 1
+    fi
+    
     print_success "获取官方版本信息成功:"
-    print_debug "  官方版本: $clean_version"
-    print_debug "  官方哈希: $short_hash"
+    print_debug "  官方版本: '$clean_version'"
+    print_debug "  官方哈希: '$short_hash'"
     
     # 返回版本号和哈希（空格分隔）
     echo "$clean_version $short_hash"
@@ -417,7 +449,7 @@ build_backend() {
         return 1
     fi
     
-    # 动态获取官方版本信息
+    # 动态获取官方版本信息 - 增强版本
     print_info "动态获取官方版本信息..."
     local version_info=$(get_official_version_info)
     local get_version_result=$?
@@ -428,15 +460,31 @@ build_backend() {
         return 1
     fi
     
-    local official_version=$(echo "$version_info" | awk '{print $1}')
-    local official_hash=$(echo "$version_info" | awk '{print $2}')
+    # 解析版本信息 - 增强解析
+    local official_version=$(echo "$version_info" | awk '{print $1}' | tr -d '\n\r')
+    local official_hash=$(echo "$version_info" | awk '{print $2}' | tr -d '\n\r')
     
-    print_debug "解析版本信息: '$version_info' -> 版本='$official_version', 哈希='$official_hash'"
+    print_debug "原始版本信息: '$version_info'"
+    print_debug "解析后版本: '$official_version'"
+    print_debug "解析后哈希: '$official_hash'"
     
-    # 验证获取到的数据
+    # 严格验证获取到的数据
     if [ -z "$official_version" ] || [ -z "$official_hash" ]; then
         print_error "获取到的版本信息不完整，构建终止"
-        print_error "版本号: '$official_version', 哈希: '$official_hash'"
+        print_error "版本号: '$official_version' (长度: ${#official_version})"
+        print_error "哈希值: '$official_hash' (长度: ${#official_hash})"
+        return 1
+    fi
+    
+    # 验证哈希值格式
+    if [ ${#official_hash} -ne 7 ]; then
+        print_error "哈希值长度不正确: '$official_hash' (期望7位，实际${#official_hash}位)"
+        return 1
+    fi
+    
+    # 验证哈希值只包含有效字符
+    if ! echo "$official_hash" | grep -qE '^[a-f0-9]{7}$'; then
+        print_error "哈希值格式不正确: '$official_hash' (应为7位十六进制)"
         return 1
     fi
     
@@ -451,9 +499,10 @@ build_backend() {
     local display_hash="$official_hash"        # 网页显示的哈希值
     
     print_info "版本信息汇总:"
-    print_info "  动态获取的官方版本: $official_version ($official_hash)"
+    print_info "  动态获取的官方版本: $official_version"
+    print_info "  动态获取的官方哈希: $official_hash"
     print_info "  当前构建代码: $current_hash"
-    print_info "  网页将显示版本: $display_version ($display_hash)"
+    print_info "  网页将显示: $display_version ($display_hash)"
     print_info "  构建基于: 当前代码 $current_full_hash"
     
     local module_name=$(grep '^module' go.mod | awk '{print $2}')
@@ -471,8 +520,8 @@ build_backend() {
     local hash_flag="${module_name}/utils.VersionHash=${display_hash}"
     
     print_debug "LDFLAGS组件:"
-    print_debug "  版本标志: $version_flag"
-    print_debug "  哈希标志: $hash_flag"
+    print_debug "  版本标志: '$version_flag'"
+    print_debug "  哈希标志: '$hash_flag'"
     
     print_info "开始编译过程..."
     
@@ -783,8 +832,8 @@ services:
       - GIN_MODE=release
       - KOMARI_DB_TYPE=sqlite
       - KOMARI_DB_FILE=/app/data/komari.db
-      - ADMIN_USERNAME=admin
-      - ADMIN_PASSWORD=admin123
+      - ADMIN_USERNAME=komari233
+      - ADMIN_PASSWORD=Fcx331fcx331
     restart: unless-stopped
 EOF
     
@@ -804,7 +853,7 @@ EOF
         echo -e "${GREEN}docker-compose restart komari${NC}"
         echo
         print_info "访问地址: http://localhost:25774"
-        print_info "管理员账号: admin / admin123"
+        print_info "管理员账号: komari233 / Fcx331fcx331"
         print_warning "请在首次登录后及时修改密码以确保安全！"
         print_info "架构信息: AMD64架构，CGO启用，动态获取官方版本标识"
         return 0
@@ -1195,7 +1244,7 @@ main() {
                 fi
                 ;;
             10)
-                if [ -z "$DOCKER_USERNAME" ] || [ -z "$IMAGE_NAME" ] || [ -z "$IMAGE_TAG" ]; then
+               if [ -z "$DOCKER_USERNAME" ] || [ -z "$IMAGE_NAME" ] || [ -z "$IMAGE_TAG" ]; then
                     get_image_info
                 fi
                 if generate_docker_compose; then
