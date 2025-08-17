@@ -799,7 +799,7 @@ show_menu() {
     echo
 }
 
-# 主函数（修改版本 - 不自动退出）
+# 主函数（修正版本 - 确保进入菜单循环）
 main() {
     echo -e "${GREEN}欢迎使用 Komari Docker 镜像构建脚本!${NC}"
     
@@ -809,7 +809,7 @@ main() {
     # 尝试加载已保存的配置
     load_config
     
-    # 进入主循环，不自动退出
+    # 确保进入主循环，不自动退出
     while true; do
         show_menu
         read -p "请输入选项 (0-7): " choice
