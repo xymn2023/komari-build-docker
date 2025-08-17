@@ -4,6 +4,9 @@
 # 作者: AI Assistant
 # 用途: 自动化构建和推送komari项目的Docker镜像
 
+# 注释掉 set -e，改为手动错误处理
+# set -e  # 遇到错误立即退出
+
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -16,6 +19,8 @@ DOCKER_USERNAME=""
 IMAGE_NAME=""
 IMAGE_TAG="latest"  # 默认标签
 FULL_IMAGE_NAME=""
+SCRIPT_DIR=""
+PROJECT_DIR=""
 
 # 打印带颜色的消息
 print_info() {
@@ -32,6 +37,114 @@ print_warning() {
 
 print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# 初始化项目目录
+init_project_directory() {
+    print_info "初始化项目目录..."
+    
+    # 获取脚本所在目录
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    print_info "脚本目录: $SCRIPT_DIR"
+    
+    # 检查脚本是否在项目根目录
+    if [ -f "$SCRIPT_DIR/go.mod" ] && [ -f "$SCRIPT_DIR/Dockerfile" ]; then
+        PROJECT_DIR="$SCRIPT_DIR"
+        print_success "检测到项目根目录: $PROJECT_DIR"
+    else
+        # 尝试查找项目根目录
+        print_info "在脚本目录未找到go.mod，尝试查找项目根目录..."
+        
+        # 向上查找包含go.mod的目录
+        local current_dir="$SCRIPT_DIR"
+        while [ "$current_dir" != "/" ]; do
+            if [ -f "$current_dir/go.mod" ] && [ -f "$current_dir/Dockerfile" ]; then
+                PROJECT_DIR="$current_dir"
+                print_success "找到项目根目录: $PROJECT_DIR"
+                break
+            fi
+            current_dir="$(dirname "$current_dir")"
+        done
+        
+        # 如果还是没找到，尝试常见的项目目录
+        if [ -z "$PROJECT_DIR" ]; then
+            local possible_dirs=(
+                "/opt/komari"
+                "/app"
+                "$HOME/komari"
+                "$HOME/komari-main"
+                "$HOME/Downloads/Compressed/komari-main"
+                "/tmp/komari"
+                "/tmp/komari-main"
+            )
+            
+            for dir in "${possible_dirs[@]}"; do
+                if [ -f "$dir/go.mod" ] && [ -f "$dir/Dockerfile" ]; then
+                    PROJECT_DIR="$dir"
+                    print_success "找到项目根目录: $PROJECT_DIR"
+                    break
+                fi
+            done
+        fi
+    fi
+    
+    # 如果仍然没有找到项目目录
+    if [ -z "$PROJECT_DIR" ]; then
+        print_error "无法找到Komari项目根目录"
+        print_info "请确保以下文件存在:"
+        print_info "  - go.mod (Go模块文件)"
+        print_info "  - Dockerfile (Docker构建文件)"
+        print_info "或者将脚本放在项目根目录中运行"
+        return 1
+    fi
+    
+    # 切换到项目目录
+    cd "$PROJECT_DIR" || {
+        print_error "无法切换到项目目录: $PROJECT_DIR"
+        return 1
+    }
+    
+    print_success "当前工作目录: $(pwd)"
+    return 0
+}
+
+# 检查项目结构
+check_project_structure() {
+    print_info "检查项目结构..."
+    
+    local required_files=(
+        "go.mod"
+        "Dockerfile"
+        "main.go"
+    )
+    
+    local missing_files=()
+    for file in "${required_files[@]}"; do
+        if [ ! -f "$file" ]; then
+            missing_files+=("$file")
+        fi
+    done
+    
+    if [ ${#missing_files[@]} -gt 0 ]; then
+        print_error "缺少必要的项目文件:"
+        for file in "${missing_files[@]}"; do
+            print_error "  - $file"
+        done
+        return 1
+    fi
+    
+    # 检查Go模块信息
+    local module_name=$(grep '^module' go.mod | awk '{print $2}')
+    print_success "Go模块: $module_name"
+    
+    # 检查是否有public目录
+    if [ ! -d "public" ]; then
+        print_info "创建public目录"
+        mkdir -p public
+    fi
+    
+    print_success "项目结构检查完成"
+    return 0
 }
 
 # 检查并安装必要的工具
@@ -595,6 +708,12 @@ load_config() {
 build_frontend() {
     print_info "开始构建前端..."
     
+    # 确保在项目根目录
+    cd "$PROJECT_DIR" || {
+        print_error "无法切换到项目目录: $PROJECT_DIR"
+        return 1
+    }
+    
     # 检查是否已存在web目录
     if [ -d "web" ]; then
         print_warning "发现已存在的web目录，正在删除..."
@@ -611,13 +730,17 @@ build_frontend() {
     fi
     
     # 构建前端
-    cd web
+    cd web || {
+        print_error "无法进入web目录"
+        return 1
+    }
+    
     print_info "安装前端依赖..."
     if npm install; then
         print_success "前端依赖安装成功"
     else
         print_error "前端依赖安装失败"
-        cd ..
+        cd "$PROJECT_DIR"
         return 1
     fi
     
@@ -626,11 +749,15 @@ build_frontend() {
         print_success "前端项目构建成功"
     else
         print_error "前端项目构建失败"
-        cd ..
+        cd "$PROJECT_DIR"
         return 1
     fi
     
-    cd ..
+    # 返回项目根目录
+    cd "$PROJECT_DIR" || {
+        print_error "无法返回项目目录"
+        return 1
+    }
     
     # 复制构建结果
     print_info "复制前端构建结果..."
@@ -644,17 +771,25 @@ build_frontend() {
     fi
 }
 
-# 构建后端二进制文件（根据Dockerfile要求修复）
+# 构建后端二进制文件
 build_backend() {
     print_info "开始构建后端二进制文件..."
     
-    # 确保在正确的目录中（项目根目录）
+    # 确保在项目根目录
+    cd "$PROJECT_DIR" || {
+        print_error "无法切换到项目目录: $PROJECT_DIR"
+        return 1
+    }
+    
+    # 再次确认go.mod文件存在
     if [ ! -f "go.mod" ]; then
-        print_error "未找到go.mod文件，请确保在Go项目根目录中运行脚本"
-        print_info "当前目录: $(pwd)"
-        print_info "请确保脚本在包含go.mod文件的目录中运行"
+        print_error "在项目目录中未找到go.mod文件: $(pwd)"
+        print_info "项目目录内容:"
+        ls -la
         return 1
     fi
+    
+    print_success "确认go.mod文件存在: $(pwd)/go.mod"
     
     # 设置环境变量
     export CGO_ENABLED=1
@@ -664,9 +799,13 @@ build_backend() {
     VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
     VERSION_HASH=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
     
-    LDFLAGS="-s -w -X github.com/komari-monitor/komari/utils.CurrentVersion=${VERSION} -X github.com/komari-monitor/komari/utils.VersionHash=${VERSION_HASH}"
+    # 获取模块名称
+    MODULE_NAME=$(grep '^module' go.mod | awk '{print $2}')
+    print_info "Go模块: $MODULE_NAME"
     
-    # 构建linux/amd64二进制文件（符合Dockerfile命名规范）
+    LDFLAGS="-s -w -X ${MODULE_NAME}/utils.CurrentVersion=${VERSION} -X ${MODULE_NAME}/utils.VersionHash=${VERSION_HASH}"
+    
+    # 构建linux/amd64二进制文件
     print_info "构建 linux/amd64 二进制文件..."
     if GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-amd64; then
         print_success "linux/amd64 二进制文件构建成功"
@@ -675,7 +814,7 @@ build_backend() {
         return 1
     fi
     
-    # 构建linux/arm64二进制文件（符合Dockerfile命名规范）
+    # 构建linux/arm64二进制文件
     print_info "构建 linux/arm64 二进制文件..."
     if GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-arm64; then
         print_success "linux/arm64 二进制文件构建成功"
@@ -696,68 +835,15 @@ build_backend() {
     fi
 }
 
-# 构建Docker镜像（根据Dockerfile优化）
-build_docker_image() {
-    print_info "开始构建Docker镜像: $FULL_IMAGE_NAME"
-    
-    # 检查必要文件是否存在
-    if [ ! -f "Dockerfile" ]; then
-        print_error "未找到Dockerfile文件"
-        return 1
-    fi
-    
-    if [ ! -f "komari-linux-amd64" ] || [ ! -f "komari-linux-arm64" ]; then
-        print_error "未找到后端二进制文件，请先构建后端"
-        print_info "需要的文件: komari-linux-amd64, komari-linux-arm64"
-        return 1
-    fi
-    
-    # 使用buildx构建多架构镜像（推送到registry而不是本地加载）
-    print_info "构建多架构Docker镜像..."
-    if docker buildx build \
-        --platform linux/amd64,linux/arm64 \
-        --tag "$FULL_IMAGE_NAME" \
-        --push \
-        . ; then
-        
-        print_success "多架构Docker镜像构建并推送成功: $FULL_IMAGE_NAME"
-        
-        # 如果不是latest标签，同时创建latest标签
-        if [ "$IMAGE_TAG" != "latest" ]; then
-            local latest_image="${DOCKER_USERNAME}/${IMAGE_NAME}:latest"
-            print_info "同时构建latest标签: $latest_image"
-            if docker buildx build \
-                --platform linux/amd64,linux/arm64 \
-                --tag "$latest_image" \
-                --push \
-                . ; then
-                print_success "latest标签构建成功"
-                echo
-                print_info "可用的镜像标签:"
-                echo -e "  ${GREEN}$FULL_IMAGE_NAME${NC} (主标签)"
-                echo -e "  ${GREEN}$latest_image${NC} (latest标签)"
-            else
-                print_warning "latest标签构建失败，但主镜像构建成功"
-            fi
-        else
-            echo
-            print_info "构建的镜像:"
-            echo -e "  ${GREEN}$FULL_IMAGE_NAME${NC} (多架构支持: linux/amd64, linux/arm64)"
-        fi
-        return 0
-    else
-        print_error "Docker镜像构建失败"
-        print_info "请检查:"
-        print_info "1. Docker Hub登录状态: docker login"
-        print_info "2. 仓库权限是否正确"
-        print_info "3. 网络连接是否正常"
-        return 1
-    fi
-}
-
-# 构建Docker镜像（本地版本，不推送）
+# 构建Docker镜像（本地版本）
 build_docker_image_local() {
     print_info "开始构建本地Docker镜像: $FULL_IMAGE_NAME"
+    
+    # 确保在项目根目录
+    cd "$PROJECT_DIR" || {
+        print_error "无法切换到项目目录: $PROJECT_DIR"
+        return 1
+    }
     
     # 检查必要文件是否存在
     if [ ! -f "Dockerfile" ]; then
@@ -804,6 +890,75 @@ build_docker_image_local() {
     fi
 }
 
+# 构建并推送Docker镜像
+build_docker_image() {
+    print_info "开始构建并推送Docker镜像: $FULL_IMAGE_NAME"
+    
+    # 确保在项目根目录
+    cd "$PROJECT_DIR" || {
+        print_error "无法切换到项目目录: $PROJECT_DIR"
+        return 1
+    }
+    
+    # 检查必要文件是否存在
+    if [ ! -f "Dockerfile" ]; then
+        print_error "未找到Dockerfile文件"
+        return 1
+    fi
+    
+    if [ ! -f "komari-linux-amd64" ] || [ ! -f "komari-linux-arm64" ]; then
+        print_error "未找到后端二进制文件，请先构建后端"
+        return 1
+    fi
+    
+    # 检查Docker Hub登录状态
+    if ! docker info | grep -q "Username:" 2>/dev/null; then
+        print_info "请先登录Docker Hub"
+        if ! docker login; then
+            print_error "Docker Hub登录失败"
+            return 1
+        fi
+    fi
+    
+    # 使用buildx构建多架构镜像并推送
+    print_info "构建多架构Docker镜像并推送..."
+    if docker buildx build \
+        --platform linux/amd64,linux/arm64 \
+        --tag "$FULL_IMAGE_NAME" \
+        --push \
+        . ; then
+        
+        print_success "多架构Docker镜像构建并推送成功: $FULL_IMAGE_NAME"
+        
+        # 如果不是latest标签，同时构建latest标签
+        if [ "$IMAGE_TAG" != "latest" ]; then
+            local latest_image="${DOCKER_USERNAME}/${IMAGE_NAME}:latest"
+            print_info "同时构建latest标签: $latest_image"
+            if docker buildx build \
+                --platform linux/amd64,linux/arm64 \
+                --tag "$latest_image" \
+                --push \
+                . ; then
+                print_success "latest标签构建成功"
+                echo
+                print_info "可用的镜像标签:"
+                echo -e "  ${GREEN}$FULL_IMAGE_NAME${NC} (主标签)"
+                echo -e "  ${GREEN}$latest_image${NC} (latest标签)"
+            else
+                print_warning "latest标签构建失败，但主镜像构建成功"
+            fi
+        else
+            echo
+            print_info "构建的镜像:"
+            echo -e "  ${GREEN}$FULL_IMAGE_NAME${NC} (多架构支持: linux/amd64, linux/arm64)"
+        fi
+        return 0
+    else
+        print_error "Docker镜像构建失败"
+        return 1
+    fi
+}
+
 # 推送到Docker Hub
 push_to_dockerhub() {
     echo
@@ -812,56 +967,8 @@ push_to_dockerhub() {
     
     case $PUSH_CHOICE in
         [Yy]* )
-            print_info "开始推送镜像到Docker Hub..."
-            
-            # 检查是否已登录Docker Hub
-            if ! docker info | grep -q "Username:" 2>/dev/null; then
-                print_info "请先登录Docker Hub"
-                if ! docker login; then
-                    print_error "Docker Hub登录失败"
-                    return 1
-                fi
-            fi
-            
-            # 重新构建并推送多架构镜像
-            print_info "构建并推送多架构镜像: $FULL_IMAGE_NAME"
-            if docker buildx build \
-                --platform linux/amd64,linux/arm64 \
-                --tag "$FULL_IMAGE_NAME" \
-                --push \
-                . ; then
-                
-                print_success "主标签推送成功: $FULL_IMAGE_NAME"
-                
-                # 如果不是latest，也推送latest
-                if [ "$IMAGE_TAG" != "latest" ]; then
-                    local latest_image="${DOCKER_USERNAME}/${IMAGE_NAME}:latest"
-                    print_info "推送latest标签: $latest_image"
-                    if docker buildx build \
-                        --platform linux/amd64,linux/arm64 \
-                        --tag "$latest_image" \
-                        --push \
-                        . ; then
-                        print_success "latest标签推送成功"
-                    else
-                        print_warning "latest标签推送失败"
-                    fi
-                fi
-                
-                echo
-                print_success "镜像推送完成!"
-                print_info "您可以使用以下命令拉取镜像:"
-                echo -e "${GREEN}docker pull $FULL_IMAGE_NAME${NC}"
-                if [ "$IMAGE_TAG" != "latest" ]; then
-                    echo -e "${GREEN}docker pull ${DOCKER_USERNAME}/${IMAGE_NAME}:latest${NC}"
-                fi
-                echo
-                print_info "Docker Hub链接:"
-                echo -e "${BLUE}https://hub.docker.com/r/$DOCKER_USERNAME/$IMAGE_NAME${NC}"
-            else
-                print_error "镜像推送失败"
-                return 1
-            fi
+            # 直接调用构建并推送函数
+            build_docker_image
             ;;
         [Nn]* )
             print_info "跳过推送到Docker Hub"
@@ -880,6 +987,12 @@ push_to_dockerhub() {
 # 清理临时文件
 cleanup() {
     print_info "清理临时文件..."
+    
+    # 确保在项目根目录
+    cd "$PROJECT_DIR" || {
+        print_error "无法切换到项目目录: $PROJECT_DIR"
+        return 1
+    }
     
     echo
     print_info "是否要清理构建过程中的临时文件? (y/n)"
@@ -905,6 +1018,7 @@ cleanup() {
 show_menu() {
     echo
     echo -e "${BLUE}=== Komari Docker 镜像构建脚本 ===${NC}"
+    echo -e "${YELLOW}项目目录: $PROJECT_DIR${NC}"
     if [ -n "$DOCKER_USERNAME" ] && [ -n "$IMAGE_NAME" ] && [ -n "$IMAGE_TAG" ]; then
         echo -e "${YELLOW}当前配置: $FULL_IMAGE_NAME${NC}"
     else
@@ -924,9 +1038,21 @@ show_menu() {
     echo
 }
 
-# 主函数（修正版本）
+# 主函数
 main() {
     echo -e "${GREEN}欢迎使用 Komari Docker 镜像构建脚本!${NC}"
+    
+    # 初始化项目目录
+    if ! init_project_directory; then
+        print_error "项目目录初始化失败，退出脚本"
+        exit 1
+    fi
+    
+    # 检查项目结构
+    if ! check_project_structure; then
+        print_error "项目结构检查失败，退出脚本"
+        exit 1
+    fi
     
     # 检查必要工具
     check_requirements
