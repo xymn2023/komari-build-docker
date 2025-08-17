@@ -4,7 +4,6 @@
 # 作者: AI Assistant
 # 用途: 自动化构建和推送komari项目的Docker镜像
 
-
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -638,15 +637,22 @@ build_frontend() {
     mkdir -p public/dist
     if cp -r web/dist/* public/dist/; then
         print_success "前端构建完成"
+        return 0
     else
         print_error "前端构建结果复制失败"
         return 1
     fi
 }
 
-# 构建后端二进制文件
+# 构建后端二进制文件（修复目录问题）
 build_backend() {
     print_info "开始构建后端二进制文件..."
+    
+    # 确保在正确的目录中
+    if [ ! -f "go.mod" ]; then
+        print_error "未找到go.mod文件，请确保在Go项目根目录中运行脚本"
+        return 1
+    fi
     
     # 设置环境变量
     export GOOS=linux
@@ -676,19 +682,51 @@ build_backend() {
     fi
     
     print_success "后端二进制文件构建完成"
+    return 0
 }
 
-# 构建Docker镜像 (支持自定义标签)
+# 构建Docker镜像（修复多架构构建问题）
 build_docker_image() {
     print_info "开始构建Docker镜像: $FULL_IMAGE_NAME"
     
-    # 构建多架构镜像
+    # 检查必要文件是否存在
+    if [ ! -f "Dockerfile" ]; then
+        print_error "未找到Dockerfile文件"
+        return 1
+    fi
+    
+    if [ ! -f "komari-linux-amd64" ] || [ ! -f "komari-linux-arm64" ]; then
+        print_error "未找到后端二进制文件，请先构建后端"
+        return 1
+    fi
+    
+    # 先构建单架构镜像以避免导出问题
+    print_info "构建 linux/amd64 镜像..."
     if docker buildx build \
-        --platform linux/amd64,linux/arm64 \
-        --tag "$FULL_IMAGE_NAME" \
+        --platform linux/amd64 \
+        --tag "${FULL_IMAGE_NAME}-amd64" \
         --load \
         . ; then
-        
+        print_success "linux/amd64 镜像构建成功"
+    else
+        print_error "linux/amd64 镜像构建失败"
+        return 1
+    fi
+    
+    print_info "构建 linux/arm64 镜像..."
+    if docker buildx build \
+        --platform linux/arm64 \
+        --tag "${FULL_IMAGE_NAME}-arm64" \
+        --load \
+        . ; then
+        print_success "linux/arm64 镜像构建成功"
+    else
+        print_error "linux/arm64 镜像构建失败"
+        return 1
+    fi
+    
+    # 创建主标签指向amd64版本（兼容性）
+    if docker tag "${FULL_IMAGE_NAME}-amd64" "$FULL_IMAGE_NAME"; then
         print_success "Docker镜像构建成功: $FULL_IMAGE_NAME"
         
         # 如果不是latest标签，同时创建latest标签
@@ -700,14 +738,22 @@ build_docker_image() {
                 echo
                 print_info "可用的镜像标签:"
                 echo -e "  ${GREEN}$FULL_IMAGE_NAME${NC} (主标签)"
+                echo -e "  ${GREEN}${FULL_IMAGE_NAME}-amd64${NC} (amd64专用)"
+                echo -e "  ${GREEN}${FULL_IMAGE_NAME}-arm64${NC} (arm64专用)"
                 echo -e "  ${GREEN}$latest_image${NC} (latest标签)"
             else
                 print_warning "latest标签创建失败，但主镜像构建成功"
             fi
+        else
+            echo
+            print_info "可用的镜像标签:"
+            echo -e "  ${GREEN}$FULL_IMAGE_NAME${NC} (主标签)"
+            echo -e "  ${GREEN}${FULL_IMAGE_NAME}-amd64${NC} (amd64专用)"
+            echo -e "  ${GREEN}${FULL_IMAGE_NAME}-arm64${NC} (arm64专用)"
         fi
+        return 0
     else
-        print_error "Docker镜像构建失败"
-        print_warning "请检查错误信息并重试"
+        print_error "Docker镜像标签创建失败"
         return 1
     fi
 }
@@ -736,6 +782,11 @@ push_to_dockerhub() {
             if docker push "$FULL_IMAGE_NAME"; then
                 print_success "主标签推送成功: $FULL_IMAGE_NAME"
                 
+                # 推送架构特定标签
+                print_info "推送架构特定标签..."
+                docker push "${FULL_IMAGE_NAME}-amd64" 2>/dev/null || print_warning "amd64标签推送失败"
+                docker push "${FULL_IMAGE_NAME}-arm64" 2>/dev/null || print_warning "arm64标签推送失败"
+                
                 # 如果存在latest标签且不是latest，也推送latest
                 if [ "$IMAGE_TAG" != "latest" ]; then
                     local latest_image="${DOCKER_USERNAME}/${IMAGE_NAME}:latest"
@@ -753,6 +804,8 @@ push_to_dockerhub() {
                 print_success "镜像推送完成!"
                 print_info "您可以使用以下命令拉取镜像:"
                 echo -e "${GREEN}docker pull $FULL_IMAGE_NAME${NC}"
+                echo -e "${GREEN}docker pull ${FULL_IMAGE_NAME}-amd64${NC} (amd64专用)"
+                echo -e "${GREEN}docker pull ${FULL_IMAGE_NAME}-arm64${NC} (arm64专用)"
                 if [ "$IMAGE_TAG" != "latest" ]; then
                     echo -e "${GREEN}docker pull ${DOCKER_USERNAME}/${IMAGE_NAME}:latest${NC}"
                 fi
@@ -768,6 +821,8 @@ push_to_dockerhub() {
             print_info "跳过推送到Docker Hub"
             print_info "如需稍后推送，请使用以下命令:"
             echo -e "${GREEN}docker push $FULL_IMAGE_NAME${NC}"
+            echo -e "${GREEN}docker push ${FULL_IMAGE_NAME}-amd64${NC}"
+            echo -e "${GREEN}docker push ${FULL_IMAGE_NAME}-arm64${NC}"
             if [ "$IMAGE_TAG" != "latest" ]; then
                 echo -e "${GREEN}docker push ${DOCKER_USERNAME}/${IMAGE_NAME}:latest${NC}"
             fi
@@ -824,7 +879,7 @@ show_menu() {
     echo
 }
 
-# 主函数（修正版本 - 确保进入菜单循环）
+# 主函数（修正版本 - 添加错误处理逻辑）
 main() {
     echo -e "${GREEN}欢迎使用 Komari Docker 镜像构建脚本!${NC}"
     
@@ -846,9 +901,26 @@ main() {
                     get_image_info
                 fi
                 
-                build_frontend
-                build_backend
-                build_docker_image
+                # 构建前端
+                print_info "开始完整构建流程..."
+                if ! build_frontend; then
+                    print_error "前端构建失败，停止构建流程"
+                    continue
+                fi
+                
+                # 构建后端
+                if ! build_backend; then
+                    print_error "后端构建失败，停止构建流程"
+                    continue
+                fi
+                
+                # 构建Docker镜像
+                if ! build_docker_image; then
+                    print_error "Docker镜像构建失败，停止构建流程"
+                    continue
+                fi
+                
+                # 只有所有构建步骤成功后才询问推送
                 push_to_dockerhub
                 save_config
                 cleanup
@@ -862,19 +934,28 @@ main() {
                 get_image_info
                 ;;
             3)
-                build_frontend
-                print_success "前端构建完成！"
+                if build_frontend; then
+                    print_success "前端构建完成！"
+                else
+                    print_error "前端构建失败！"
+                fi
                 ;;
             4)
-                build_backend
-                print_success "后端构建完成！"
+                if build_backend; then
+                    print_success "后端构建完成！"
+                else
+                    print_error "后端构建失败！"
+                fi
                 ;;
             5)
                 if [ -z "$DOCKER_USERNAME" ] || [ -z "$IMAGE_NAME" ] || [ -z "$IMAGE_TAG" ]; then
                     get_image_info
                 fi
-                build_docker_image
-                print_success "Docker镜像构建完成！"
+                if build_docker_image; then
+                    print_success "Docker镜像构建完成！"
+                else
+                    print_error "Docker镜像构建失败！"
+                fi
                 ;;
             6)
                 if [ -z "$DOCKER_USERNAME" ] || [ -z "$IMAGE_NAME" ] || [ -z "$IMAGE_TAG" ]; then
