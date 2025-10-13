@@ -804,7 +804,7 @@ get_docker_username() {
 get_image_name() {
     echo
     print_info "请输入Docker镜像名称 (不包含用户名和标签):"
-    echo -e "${YELLOW}示例: komari, komari-monitor, my-komari${NC}"
+    echo -e "${YELLOW}示例: komari komari-monitor my-komari${NC}"
     read -p "镜像名称: " IMAGE_NAME
     
     if [ -z "$IMAGE_NAME" ]; then
