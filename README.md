@@ -13,3 +13,28 @@ bash <(curl -fsSL https://raw.githubusercontent.com/xymn2023/komari-build-docker
 **说明**
 
 脚本中内置了可以在运行脚本目录生成docker-compose.yml文件
+
+
+**常见问题**
+
+****
+[INFO] 开始编译过程...
+
+[INFO] 执行基础编译测试...
+
+[ERROR] 基础编译测试失败，请检查Go环境和项目代码
+
+[ERROR] 后端构建失败，停止构建流程
+
+
+解决方法：安装 C 语言的构建工具包  
+
+```
+sudo apt-get update
+```
+
+```
+sudo apt-get install build-essential -y
+```
+
+
