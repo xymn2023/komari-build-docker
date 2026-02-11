@@ -197,12 +197,20 @@ check_requirements() {
 install_missing_tools() {
     local tools=("$@")
     print_info "开始自动安装缺失的工具..."
-    install_tools_linux "${tools[@]}"
+    
+    # 根据操作系统选择安装方式
+    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        install_tools_linux "${tools[@]}"
+    else
+        print_error "目前仅支持Linux系统自动安装依赖"
+        return 1
+    fi
 }
 
 install_tools_linux() {
     local tools=("$@")
     
+    # 检查包管理器
     if command -v apt-get &> /dev/null; then
         print_info "使用apt-get安装工具..."
         sudo apt-get update -qq
@@ -221,6 +229,7 @@ install_tools_linux() {
                     sudo apt-get update -qq
                     sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
                     
+                    # 启动Docker并设置开机启动
                     sudo usermod -aG docker $USER
                     sudo systemctl start docker
                     sudo systemctl enable docker
@@ -228,18 +237,19 @@ install_tools_linux() {
                     print_success "Docker安装完成"
                     ;;
                 "nodejs")
-                    print_info "安装Node.js 20+..."
+                    print_info "安装Node.js..."
                     curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
                     sudo apt-get install -y nodejs
                     print_success "Node.js安装完成"
                     ;;
                 "golang")
-                    print_info "安装Go 1.21+..."
+                    print_info "安装Go..."
                     GO_VERSION="1.21.5"
                     wget -q https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
                     sudo rm -rf /usr/local/go
                     sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
                     
+                    # 添加到PATH
                     if ! grep -q '/usr/local/go/bin' ~/.bashrc; then
                         echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
                     fi
@@ -260,11 +270,9 @@ install_tools_linux() {
             esac
         done
     else
-        print_error "不支持的Linux发行版，请手动安装必要工具"
+        print_error "不支持的包管理器，请手动安装: ${tools[*]}"
         return 1
     fi
-    
-    print_success "所有工具安装完成"
 }
 
 check_docker_buildx() {
@@ -292,6 +300,7 @@ check_docker_buildx() {
 create_buildx_builder() {
     print_info "创建Docker Buildx构建器: $BUILDX_BUILDER (AMD64)"
     
+    # 创建新的构建器，指定平台为linux/amd64
     if docker buildx create \
         --name "$BUILDX_BUILDER" \
         --driver docker-container \
@@ -304,6 +313,7 @@ create_buildx_builder() {
         return 1
     fi
     
+    # 引导构建器
     print_info "启动构建器..."
     if docker buildx inspect --bootstrap "$BUILDX_BUILDER"; then
         print_success "构建器启动成功"
@@ -611,14 +621,18 @@ get_docker_username() {
     echo
     print_info "请输入您的Docker Hub用户名:"
     read -p "Docker Hub用户名: " DOCKER_USERNAME
-    if [ -z "$DOCKER_USERNAME" ]; then get_docker_username; fi
+    if [ -z "$DOCKER_USERNAME" ]; then
+        get_docker_username
+    fi
 }
 
 get_image_name() {
     echo
     print_info "请输入Docker镜像名称:"
     read -p "镜像名称: " IMAGE_NAME
-    if [ -z "$IMAGE_NAME" ]; then get_image_name; fi
+    if [ -z "$IMAGE_NAME" ]; then
+        get_image_name
+    fi
 }
 
 get_image_tag() {
@@ -657,7 +671,12 @@ push_to_dockerhub() {
     print_info "是否要推送镜像到Docker Hub? (y/n)"
     read -p "请选择: " PUSH_CHOICE
     case $PUSH_CHOICE in
-        [Yy]* ) build_docker_image ;;
+        [Yy]* ) 
+            build_docker_image
+            ;;
+        * ) 
+            print_info "跳过镜像推送"
+            ;;
     esac
 }
 
@@ -690,22 +709,57 @@ main() {
     while true; do
         show_menu
         read -p "请输入选项: " choice
+        
         case $choice in
             1)
-                if [ -z "$DOCKER_USERNAME" ]; then get_image_info; fi
-                build_frontend && build_backend && build_docker_image_local && push_to_dockerhub && save_config && generate_docker_compose && cleanup
+                if [ -z "$DOCKER_USERNAME" ]; then
+                    get_image_info
+                fi
+                if build_frontend && build_backend && build_docker_image_local; then
+                    push_to_dockerhub
+                    save_config
+                    generate_docker_compose
+                    cleanup
+                    print_success "完整流程执行完毕！"
+                fi
                 ;;
-            2) get_image_info ;;
-            3) build_frontend ;;
-            4) build_backend ;;
-            5) if [ -z "$DOCKER_USERNAME" ]; then get_image_info; fi; build_docker_image_local ;;
-            6) if [ -z "$DOCKER_USERNAME" ]; then get_image_info; fi; build_docker_image ;;
-            8) cleanup ;;
-            10) generate_docker_compose ;;
-            0) exit 0 ;;
-            *) print_error "无效选项" ;;
+            2)
+                get_image_info
+                ;;
+            3)
+                build_frontend
+                ;;
+            4)
+                build_backend
+                ;;
+            5)
+                if [ -z "$DOCKER_USERNAME" ]; then
+                    get_image_info
+                fi
+                build_docker_image_local
+                ;;
+            6)
+                if [ -z "$DOCKER_USERNAME" ]; then
+                    get_image_info
+                fi
+                build_docker_image
+                ;;
+            8)
+                cleanup
+                ;;
+            10)
+                generate_docker_compose
+                ;;
+            0)
+                print_info "正在退出..."
+                exit 0
+                ;;
+            *)
+                print_error "无效选项: $choice"
+                ;;
         esac
     已完成
 }
 
+# 启动脚本
 main "$@"
