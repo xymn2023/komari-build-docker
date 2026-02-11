@@ -86,7 +86,7 @@ get_official_version_info() {
     if [ -z "$tag_name" ] || [ "$tag_name" = "null" ]; then
         print_error "无法从GitHub API获取版本信息，请检查网络连接"
         return 1
-    }
+    fi # <--- 修正：将 '}' 改为 'fi'
     
     # 使用Tags API获取该tag对应的提交哈希
     local tags_api="https://api.github.com/repos/komari-monitor/komari/git/refs/tags/${tag_name}"
@@ -95,7 +95,7 @@ get_official_version_info() {
     if [ -z "$commit_sha" ] || [ "$commit_sha" = "null" ]; then
         print_error "无法从GitHub API获取提交哈希，请检查网络连接"
         return 1
-    }
+    fi # <--- 修正：将 '}' 改为 'fi'
     
     # 清理版本号和截取哈希
     local clean_version=$(echo "$tag_name" | sed 's/^v//')
