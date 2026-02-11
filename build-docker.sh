@@ -86,7 +86,7 @@ get_official_version_info() {
     if [ -z "$tag_name" ] || [ "$tag_name" = "null" ]; then
         print_error "无法从GitHub API获取版本信息，请检查网络连接"
         return 1
-    fi # <--- 修正：将 '}' 改为 'fi'
+    fi
     
     # 使用Tags API获取该tag对应的提交哈希
     local tags_api="https://api.github.com/repos/komari-monitor/komari/git/refs/tags/${tag_name}"
@@ -95,7 +95,7 @@ get_official_version_info() {
     if [ -z "$commit_sha" ] || [ "$commit_sha" = "null" ]; then
         print_error "无法从GitHub API获取提交哈希，请检查网络连接"
         return 1
-    fi # <--- 修正：将 '}' 改为 'fi'
+    fi
     
     # 清理版本号和截取哈希
     local clean_version=$(echo "$tag_name" | sed 's/^v//')
@@ -405,22 +405,21 @@ build_backend() {
         return 1
     fi
     
-    # 按照 Go 嵌入指令的要求，将前端静态文件复制到后端项目的 public/defaultTheme 目录
-    print_info "复制前端静态文件到后端项目的/public/defaultTheme目录..."
-    mkdir -p public/defaultTheme
+    # 按照 Go 嵌入指令的要求，将前端静态文件复制到后端项目的 public/defaultTheme/dist 目录
+    # 注意：这里我们创建了 defaultTheme/dist 子目录
+    print_info "复制前端静态文件到后端项目的/public/defaultTheme/dist目录..."
+    mkdir -p public/defaultTheme/dist # <-- 重点：在这里创建了 'dist' 子目录
     
     # 清空目标目录，防止旧文件干扰
-    if [ "$(ls -A public/defaultTheme)" ]; then
-        print_warning "public/defaultTheme 目录非空，正在清理..."
-        rm -rf public/defaultTheme/*
+    if [ "$(ls -A public/defaultTheme/dist)" ]; then # <-- 也要检查 dist 目录
+        print_warning "public/defaultTheme/dist 目录非空，正在清理..."
+        rm -rf public/defaultTheme/dist/* # <-- 清理 dist 目录
     fi
 
     if [ -d "$WORK_DIR/$FRONTEND_PROJECT/dist" ]; then
-        # 注意：这里是直接将 dist 目录下的所有内容（包括文件和子目录）复制到 defaultTheme 内部
-        # 相当于最终结构是 public/defaultTheme/index.html, public/defaultTheme/assets/...
-        # 这与 public.go 中的 `fs.Sub(PublicFS, "defaultTheme")` 是匹配的
-        if cp -r "$WORK_DIR/$FRONTEND_PROJECT/dist"/* public/defaultTheme/; then
-            print_success "前端静态文件复制成功到 public/defaultTheme"
+        # 将前端项目 dist 目录下的所有内容复制到 .../defaultTheme/dist/
+        if cp -r "$WORK_DIR/$FRONTEND_PROJECT/dist"/* public/defaultTheme/dist/; then
+            print_success "前端静态文件复制成功到 public/defaultTheme/dist"
         else
             print_error "前端静态文件复制失败"
             return 1
@@ -632,7 +631,6 @@ EOF
     print_success "docker-compose.yml文件生成成功"
 }
 
-# --- 修改后的 get_docker_username 函数 ---
 get_docker_username() {
     echo
     print_info "请输入您的Docker Hub用户名:"
@@ -646,18 +644,12 @@ get_docker_username() {
     done
 }
 
-# --- 修改后的 get_image_name 函数 ---
 get_image_name() {
     echo
-    print_info "请输入Docker镜像名称:"
-    while true; do # 使用循环直到输入有效镜像名称
-        read -p "镜像名称: " IMAGE_NAME
-        if [ -n "$IMAGE_NAME" ]; then # 检查镜像名称是否为空
-            break # 如果不为空，则跳出循环
-        else
-            print_warning "Docker镜像名称不能为空，请重新输入。"
-        fi
-    done
+    print_info "请输入Docker镜像名称 [komari]:"
+    read -p "镜像名称: " input_image_name
+    IMAGE_NAME=${input_image_name:-komari} # 如果用户输入为空，则使用 'komari'
+    print_info "Docker镜像名称设置为: $IMAGE_NAME"
 }
 
 get_image_tag() {
