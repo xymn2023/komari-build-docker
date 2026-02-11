@@ -230,7 +230,7 @@ install_tools_linux() {
                     sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
                     
                     # 启动Docker并设置开机启动
-                    sudo usermod -aG docker $USER
+                    sudo usermod -aG docker "$USER"
                     sudo systemctl start docker
                     sudo systemctl enable docker
                     
@@ -245,9 +245,9 @@ install_tools_linux() {
                 "golang")
                     print_info "安装Go..."
                     GO_VERSION="1.21.5"
-                    wget -q https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
+                    wget -q https://go.dev/dl/go"${GO_VERSION}".linux-amd64.tar.gz
                     sudo rm -rf /usr/local/go
-                    sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
+                    sudo tar -C /usr/local -xzf go"${GO_VERSION}".linux-amd64.tar.gz
                     
                     # 添加到PATH
                     if ! grep -q '/usr/local/go/bin' ~/.bashrc; then
@@ -259,7 +259,7 @@ install_tools_linux() {
                     fi
                     
                     export PATH=$PATH:/usr/local/go/bin
-                    rm go${GO_VERSION}.linux-amd64.tar.gz
+                    rm go"${GO_VERSION}".linux-amd64.tar.gz
                     print_success "Go安装完成"
                     ;;
                 "git")
@@ -425,7 +425,7 @@ build_backend() {
     local version_info=$(get_official_version_info)
     local get_version_result=$?
     
-    if [ $get_version_result -ne 0 ] || [ -z "$version_info" ]; then
+    if [ "$get_version_result" -ne 0 ] || [ -z "$version_info" ]; then
         print_error "无法获取官方版本信息，构建终止"
         print_error "请检查网络连接或GitHub API访问权限"
         return 1
@@ -443,7 +443,7 @@ build_backend() {
     fi
     
     # 验证哈希长度
-    if [ ${#official_hash} -ne 7 ]; then
+    if [ "${#official_hash}" -ne 7 ]; then
         print_error "哈希值长度不正确: '$official_hash' (期望7位，实际${#official_hash}位)"
         return 1
     fi
@@ -539,6 +539,7 @@ build_docker_image_local() {
         return 1
     fi
     
+    # Ensures the buildx builder is available and used
     if ! docker buildx use "$BUILDX_BUILDER" &> /dev/null; then
         check_docker_buildx
     fi
