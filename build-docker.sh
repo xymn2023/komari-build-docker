@@ -258,7 +258,7 @@ install_tools_linux() {
                         echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.profile
                     fi
                     
-                    export PATH=$PATH:/usr/local/go/bin
+                    输出 PATH=$PATH:/usr/local/go/bin
                     rm go"${GO_VERSION}".linux-amd64.tar.gz
                     print_success "Go安装完成"
                     ;;
@@ -268,8 +268,8 @@ install_tools_linux() {
                     print_success "Git安装完成"
                     ;;
             esac
-        已完成
-    else
+        
+    
         print_error "不支持的包管理器，请手动安装: ${tools[*]}"
         return 1
     fi
