@@ -86,7 +86,7 @@ get_official_version_info() {
     if [ -z "$tag_name" ] || [ "$tag_name" = "null" ]; then
         print_error "无法从GitHub API获取版本信息，请检查网络连接"
         return 1
-    fi
+    }
     
     # 使用Tags API获取该tag对应的提交哈希
     local tags_api="https://api.github.com/repos/komari-monitor/komari/git/refs/tags/${tag_name}"
@@ -95,7 +95,7 @@ get_official_version_info() {
     if [ -z "$commit_sha" ] || [ "$commit_sha" = "null" ]; then
         print_error "无法从GitHub API获取提交哈希，请检查网络连接"
         return 1
-    fi
+    }
     
     # 清理版本号和截取哈希
     local clean_version=$(echo "$tag_name" | sed 's/^v//')
@@ -405,12 +405,22 @@ build_backend() {
         return 1
     fi
     
-    print_info "复制前端静态文件到后端项目的/public/dist目录..."
-    mkdir -p public/dist
+    # 按照 Go 嵌入指令的要求，将前端静态文件复制到后端项目的 public/defaultTheme 目录
+    print_info "复制前端静态文件到后端项目的/public/defaultTheme目录..."
+    mkdir -p public/defaultTheme
     
+    # 清空目标目录，防止旧文件干扰
+    if [ "$(ls -A public/defaultTheme)" ]; then
+        print_warning "public/defaultTheme 目录非空，正在清理..."
+        rm -rf public/defaultTheme/*
+    fi
+
     if [ -d "$WORK_DIR/$FRONTEND_PROJECT/dist" ]; then
-        if cp -r "$WORK_DIR/$FRONTEND_PROJECT/dist"/* public/dist/; then
-            print_success "前端静态文件复制成功"
+        # 注意：这里是直接将 dist 目录下的所有内容（包括文件和子目录）复制到 defaultTheme 内部
+        # 相当于最终结构是 public/defaultTheme/index.html, public/defaultTheme/assets/...
+        # 这与 public.go 中的 `fs.Sub(PublicFS, "defaultTheme")` 是匹配的
+        if cp -r "$WORK_DIR/$FRONTEND_PROJECT/dist"/* public/defaultTheme/; then
+            print_success "前端静态文件复制成功到 public/defaultTheme"
         else
             print_error "前端静态文件复制失败"
             return 1
@@ -511,6 +521,10 @@ RUN apt-get update && apt-get install -y \
 COPY komari-linux-amd64 /app/komari
 RUN chmod +x /app/komari
 
+# 注意: 后端 `public/public.go` 中的 `DataDir` 是 `./data`
+# 为了确保 Dockerfile 和 Go 代码中的路径一致，将卷挂载到 /app/data
+VOLUME ["/app/data"]
+
 ENV GIN_MODE=release
 ENV KOMARI_DB_TYPE=sqlite
 ENV KOMARI_DB_FILE=/app/data/komari.db
@@ -525,7 +539,7 @@ EOF
 }
 
 build_docker_image_local() {
-    print_info "=== 步骤3: 构建Docker镜像 (AMD64) ==="
+    print_info "=== 步骤3: 构建Docker镜像 (AMD64) ==-"
     
     cd "$WORK_DIR/$BACKEND_PROJECT" || {
         print_error "无法进入后端项目目录"
