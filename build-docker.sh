@@ -268,7 +268,7 @@ install_tools_linux() {
                     print_success "Git安装完成"
                     ;;
             esac
-        done
+        已完成
     else
         print_error "不支持的包管理器，请手动安装: ${tools[*]}"
         return 1
@@ -616,7 +616,7 @@ generate_docker_compose() {
 version: '3.8'
 services:
   komari:
-    image: $FULL_IMAGE_NAME
+    image: smhw3565/komari:latest
     container_name: komari
     ports:
       - "25774:25774"
@@ -626,7 +626,11 @@ services:
       - GIN_MODE=release
       - KOMARI_DB_TYPE=sqlite
       - KOMARI_DB_FILE=/app/data/komari.db
-    restart: unless-stopped
+      # 可选：自定义初始管理员账号密码
+      - ADMIN_USERNAME=admin
+      - ADMIN_PASSWORD=yourpassword
+    restart: unless-stopped 
+
 EOF
     print_success "docker-compose.yml文件生成成功"
 }
@@ -641,7 +645,7 @@ get_docker_username() {
         else
             print_warning "Docker Hub用户名不能为空，请重新输入。"
         fi
-    done
+    已完成
 }
 
 get_image_name() {
