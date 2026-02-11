@@ -258,7 +258,7 @@ install_tools_linux() {
                         echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.profile
                     fi
                     
-                    输出 PATH=$PATH:/usr/local/go/bin
+                    export PATH=$PATH:/usr/local/go/bin
                     rm go"${GO_VERSION}".linux-amd64.tar.gz
                     print_success "Go安装完成"
                     ;;
@@ -268,11 +268,11 @@ install_tools_linux() {
                     print_success "Git安装完成"
                     ;;
             esac
-        
-    
+        done # <-- 闭合 for 循环
+    else # <-- else 块紧随 if 命令之后
         print_error "不支持的包管理器，请手动安装: ${tools[*]}"
         return 1
-    fi
+    fi # <-- 闭合 if 命令
 }
 
 check_docker_buildx() {
@@ -616,7 +616,7 @@ generate_docker_compose() {
 version: '3.8'
 services:
   komari:
-    image: smhw3565/komari:latest
+    image: $FULL_IMAGE_NAME # 使用构建好的镜像名称
     container_name: komari
     ports:
       - "25774:25774"
@@ -626,11 +626,10 @@ services:
       - GIN_MODE=release
       - KOMARI_DB_TYPE=sqlite
       - KOMARI_DB_FILE=/app/data/komari.db
-      # 可选：自定义初始管理员账号密码
-      - ADMIN_USERNAME=admin
-      - ADMIN_PASSWORD=yourpassword
-    restart: unless-stopped 
-
+      # 可选：自定义初始管理员账号密码，首次启动时生效
+      # - ADMIN_USERNAME=admin
+      # - ADMIN_PASSWORD=yourpassword_secure_password_here
+    restart: unless-stopped
 EOF
     print_success "docker-compose.yml文件生成成功"
 }
@@ -645,7 +644,7 @@ get_docker_username() {
         else
             print_warning "Docker Hub用户名不能为空，请重新输入。"
         fi
-    已完成
+    done # <-- 闭合 while 循环
 }
 
 get_image_name() {
