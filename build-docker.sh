@@ -139,6 +139,7 @@ check_requirements() {
     else
         local node_version=$(node --version | sed 's/v//')
         local major_version=$(echo $node_version | cut -d. -f1)
+        # 修改点：Node.js 环境依赖要求 20+
         if [ "$major_version" -lt 20 ]; then
             print_warning "Node.js版本过低 ($node_version)，需要20+，正在升级..."
             missing_tools+=("nodejs")
@@ -164,6 +165,7 @@ check_requirements() {
         local go_version=$(go version | awk '{print $3}' | sed 's/go//')
         local major_version=$(echo $go_version | cut -d. -f1)
         local minor_version=$(echo $go_version | cut -d. -f2)
+        # 修改点：Go 环境依赖要求 1.18+
         if [ "$major_version" -lt 1 ] || ([ "$major_version" -eq 1 ] && [ "$minor_version" -lt 18 ]); then
             print_warning "Go版本过低 ($go_version)，需要1.18+，正在升级..."
             missing_tools+=("golang")
@@ -436,11 +438,9 @@ build_backend() {
         return 1
     fi
     
-    # 获取当前代码信息（仅用于构建日志）
+    # 获取当前代码信息
     local current_hash=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-    local current_full_hash=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
     
-    # 使用动态获取的官方版本号和官方哈希值进行版本注入
     local display_version="$official_version"  # 网页显示的版本号
     local display_hash="$official_hash"        # 网页显示的哈希值
     
@@ -451,7 +451,7 @@ build_backend() {
     
     local module_name=$(grep '^module' go.mod | awk '{print $2}')
     
-    # 版本注入：使用动态获取的官方版本号和官方哈希值
+    # 版本注入
     local version_flag="${module_name}/utils.CurrentVersion=${display_version}"
     local hash_flag="${module_name}/utils.VersionHash=${display_hash}"
     
@@ -462,71 +462,17 @@ build_backend() {
     export GOOS=linux
     export GOARCH=amd64
     
-    # 先进行基础编译测试
-    print_info "执行基础编译测试..."
-    if go build -o komari-test-basic 2>/dev/null; then
-        print_success "基础编译测试通过"
-        rm -f komari-test-basic
-        
-        # 测试带简单LDFLAGS的编译
-        print_info "测试简单LDFLAGS编译..."
-        if go build -ldflags="-s -w" -o komari-test-simple 2>/dev/null; then
-            print_success "简单LDFLAGS编译测试通过"
-            rm -f komari-test-simple
-            
-            # 执行完整编译
-            print_info "执行完整编译（包含动态获取的官方版本信息）..."
-            
-            if go build -trimpath -ldflags="-s -w -X '$version_flag' -X '$hash_flag'" -o komari-linux-amd64; then
-                print_success "完整编译成功（包含动态获取的官方版本信息）"
-            else
-                print_warning "完整编译失败，尝试不带trimpath..."
-                if go build -ldflags="-s -w -X '$version_flag' -X '$hash_flag'" -o komari-linux-amd64; then
-                    print_success "编译成功（不带trimpath）"
-                else
-                    print_warning "带版本信息编译失败，使用简化编译..."
-                    if go build -ldflags="-s -w" -o komari-linux-amd64; then
-                        print_warning "简化编译成功（版本信息可能不完整）"
-                    else
-                        print_error "所有编译尝试都失败了"
-                        return 1
-                    fi
-                fi
-            fi
-        else
-            print_warning "简单LDFLAGS编译失败，尝试最基础编译..."
-            if go build -o komari-linux-amd64; then
-                print_warning "基础编译成功（无优化，无版本信息）"
-            else
-                print_error "基础编译失败"
-                return 1
-            fi
-        fi
+    # 执行编译
+    if go build -trimpath -ldflags="-s -w -X '$version_flag' -X '$hash_flag'" -o komari-linux-amd64; then
+        print_success "完整编译成功"
     else
-        print_error "基础编译测试失败，请检查Go环境和项目代码"
+        print_error "所有编译尝试都失败了"
         return 1
     fi
     
     # 验证编译结果
     if [ -f "komari-linux-amd64" ]; then
         print_success "后端二进制文件构建完成"
-        print_info "生成的文件信息:"
-        ls -la komari-linux-amd64
-        
-        # 尝试获取版本信息
-        print_info "尝试验证版本信息..."
-        if ./komari-linux-amd64 --version 2>/dev/null; then
-            print_success "版本信息验证成功"
-        else
-            print_warning "无法验证版本信息（可能是正常的）"
-        fi
-        
-        print_info "编译总结:"
-        print_info "  网页显示版本: $display_version ($display_hash)"
-        print_info "  基于官方版本: $official_version"
-        print_info "  版本信息来源: 动态从GitHub API获取"
-        print_info "  目标架构: linux/amd64"
-        
         return 0
     else
         print_error "二进制文件生成失败"
@@ -558,11 +504,6 @@ RUN chmod +x /app/komari
 ENV GIN_MODE=release
 ENV KOMARI_DB_TYPE=sqlite
 ENV KOMARI_DB_FILE=/app/data/komari.db
-ENV KOMARI_DB_HOST=localhost
-ENV KOMARI_DB_PORT=3306
-ENV KOMARI_DB_USER=root
-ENV KOMARI_DB_PASS=
-ENV KOMARI_DB_NAME=komari
 ENV KOMARI_LISTEN=0.0.0.0:25774
 
 EXPOSE 25774
@@ -589,7 +530,6 @@ build_docker_image_local() {
     fi
     
     if ! docker buildx use "$BUILDX_BUILDER" &> /dev/null; then
-        print_warning "无法切换到构建器 $BUILDX_BUILDER，尝试重新配置..."
         check_docker_buildx
     fi
     
@@ -600,14 +540,6 @@ build_docker_image_local() {
         --load \
         . ; then
         print_success "本地Docker镜像构建成功: $FULL_IMAGE_NAME"
-        
-        if [ "$IMAGE_TAG" != "latest" ]; then
-            local latest_image="${DOCKER_USERNAME}/${IMAGE_NAME}:latest"
-            print_info "创建latest标签: $latest_image"
-            if docker tag "$FULL_IMAGE_NAME" "$latest_image"; then
-                print_success "latest标签创建成功"
-            fi
-        fi
         return 0
     else
         print_error "本地Docker镜像构建失败"
@@ -625,11 +557,6 @@ build_docker_image() {
     
     create_dockerfile
     
-    if [ ! -f "komari-linux-amd64" ]; then
-        print_error "未找到后端二进制文件，请先构建后端"
-        return 1
-    fi
-    
     if ! docker info | grep -q "Username:" 2>/dev/null; then
         print_info "请先登录Docker Hub"
         if ! docker login; then
@@ -639,108 +566,33 @@ build_docker_image() {
     fi
     
     if ! docker buildx use "$BUILDX_BUILDER" &> /dev/null; then
-        print_warning "无法切换到构建器 $BUILDX_BUILDER，尝试重新配置..."
-        if ! check_docker_buildx; then
-            print_error "无法配置构建器"
-            return 1
-        fi
-    fi
-    
-    print_info "验证构建器状态..."
-    if ! docker buildx inspect "$BUILDX_BUILDER" | grep -q "running"; then
-        print_info "启动构建器..."
-        docker buildx inspect --bootstrap "$BUILDX_BUILDER" || {
-            print_error "无法启动构建器"
-            return 1
-        }
+        check_docker_buildx
     fi
     
     print_info "构建AMD64 Docker镜像并推送: $FULL_IMAGE_NAME"
-    print_info "支持的架构: linux/amd64"
-    
     if docker buildx build \
         --platform linux/amd64 \
         --tag "$FULL_IMAGE_NAME" \
         --push \
         . ; then
-        
         print_success "AMD64 Docker镜像构建并推送成功: $FULL_IMAGE_NAME"
-        
-        if [ "$IMAGE_TAG" != "latest" ]; then
-            local latest_image="${DOCKER_USERNAME}/${IMAGE_NAME}:latest"
-            print_info "同时构建latest标签: $latest_image"
-            if docker buildx build \
-                --platform linux/amd64 \
-                --tag "$latest_image" \
-                --push \
-                . ; then
-                print_success "latest标签构建成功"
-            else
-                print_warning "latest标签构建失败，但主镜像构建成功"
-            fi
-        fi
-        
-        echo
-        print_success "Docker镜像推送完成!"
-        print_info "您可以使用以下命令拉取镜像:"
-        echo -e "${GREEN}docker pull $FULL_IMAGE_NAME${NC}"
-        if [ "$IMAGE_TAG" != "latest" ]; then
-            echo -e "${GREEN}docker pull ${DOCKER_USERNAME}/${IMAGE_NAME}:latest${NC}"
-        fi
-        echo
-        print_info "Docker Hub链接:"
-        echo -e "${BLUE}https://hub.docker.com/r/$DOCKER_USERNAME/$IMAGE_NAME${NC}"
-        
         return 0
     else
         print_error "Docker镜像构建失败"
-        print_info "可能的解决方案:"
-        print_info "1. 检查网络连接"
-        print_info "2. 确认Docker Hub登录状态"
-        print_info "3. 验证仓库权限"
-        print_info "4. 尝试重新创建构建器: docker buildx rm $BUILDX_BUILDER"
         return 1
     fi
 }
 
 generate_docker_compose() {
-    print_info "=== 生成docker-compose.yml文件 (AMD64架构) ==="
-    
+    print_info "=== 生成docker-compose.yml文件 ==="
     local compose_file="docker-compose.yml"
+    cd "$WORK_DIR" || return 1
     
-    cd "$WORK_DIR" || {
-        print_error "无法切换到工作目录: $WORK_DIR"
-        return 1
-    }
-    
-    if [ -f "$compose_file" ]; then
-        print_warning "发现已存在的docker-compose.yml文件"
-        echo
-        print_info "是否要覆盖现有文件? (y/n)"
-        read -p "请选择: " overwrite_choice
-        
-        case $overwrite_choice in
-            [Yy]* )
-                print_info "覆盖现有文件..."
-                ;;
-            [Nn]* )
-                print_info "跳过生成docker-compose.yml文件"
-                return 0
-                ;;
-            * )
-                print_warning "无效选择，跳过生成"
-                return 0
-                ;;
-        esac
-    fi
-    
-    print_info "生成docker-compose.yml文件..."
     cat > "$compose_file" << EOF
 version: '3.8'
 services:
   komari:
     image: $FULL_IMAGE_NAME
-    platform: linux/amd64
     container_name: komari
     ports:
       - "25774:25774"
@@ -750,436 +602,110 @@ services:
       - GIN_MODE=release
       - KOMARI_DB_TYPE=sqlite
       - KOMARI_DB_FILE=/app/data/komari.db
-      - ADMIN_USERNAME=admin
-      - ADMIN_PASSWORD=admin123
     restart: unless-stopped
 EOF
-    
-    if [ -f "$compose_file" ]; then
-        print_success "docker-compose.yml文件生成成功: $WORK_DIR/$compose_file"
-        echo
-        print_info "文件内容预览:"
-        echo -e "${YELLOW}$(cat $compose_file)${NC}"
-        echo
-        print_info "使用方法:"
-        echo -e "${GREEN}mkdir -p data${NC}"
-        echo -e "${GREEN}docker-compose up -d${NC}"
-        echo
-        print_info "管理命令:"
-        echo -e "${GREEN}docker-compose logs -f komari${NC}"
-        echo -e "${GREEN}docker-compose down${NC}"
-        echo -e "${GREEN}docker-compose restart komari${NC}"
-        echo
-        print_info "访问地址: http://localhost:25774"
-        print_info "管理员账号: admin / admin123"
-        print_warning "请在首次登录后及时修改密码以确保安全！"
-        return 0
-    else
-        print_error "docker-compose.yml文件生成失败"
-        return 1
-    fi
+    print_success "docker-compose.yml文件生成成功"
 }
 
 get_docker_username() {
     echo
     print_info "请输入您的Docker Hub用户名:"
-    echo -e "${YELLOW}示例: myusername, mycompany, john-doe${NC}"
     read -p "Docker Hub用户名: " DOCKER_USERNAME
-    
-    if [ -z "$DOCKER_USERNAME" ]; then
-        print_error "Docker Hub用户名不能为空"
-        get_docker_username
-        return
-    fi
-    
-    if [[ ! $DOCKER_USERNAME =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
-        print_error "用户名格式不正确，只能包含小写字母、数字、点、下划线和连字符"
-        get_docker_username
-        return
-    fi
-    
-    print_success "Docker Hub用户名: $DOCKER_USERNAME"
+    if [ -z "$DOCKER_USERNAME" ]; then get_docker_username; fi
 }
 
 get_image_name() {
     echo
-    print_info "请输入Docker镜像名称 (不包含用户名和标签):"
-    echo -e "${YELLOW}示例: komari komari-monitor my-komari${NC}"
+    print_info "请输入Docker镜像名称:"
     read -p "镜像名称: " IMAGE_NAME
-    
-    if [ -z "$IMAGE_NAME" ]; then
-        print_error "镜像名称不能为空"
-        get_image_name
-        return
-    fi
-    
-    if [[ ! $IMAGE_NAME =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
-        print_error "镜像名称格式不正确，只能包含小写字母、数字、点、下划线和连字符"
-        get_image_name
-        return
-    fi
-    
-    print_success "镜像名称: $IMAGE_NAME"
+    if [ -z "$IMAGE_NAME" ]; then get_image_name; fi
 }
 
 get_image_tag() {
     echo
-    print_info "请输入镜像标签 (直接回车使用默认值 'latest'):"
-    echo -e "${YELLOW}示例: latest, v1.0.0, dev, stable, $(date +%Y%m%d)${NC}"
-    echo -e "${YELLOW}当前默认: latest${NC}"
-    read -p "镜像标签 [latest]: " input_tag
-    
-    if [ -z "$input_tag" ]; then
-        IMAGE_TAG="latest"
-        print_success "使用默认标签: $IMAGE_TAG"
-    else
-        if [[ ! $input_tag =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
-            print_error "标签格式不正确，只能包含字母、数字、点、下划线和连字符，且必须以字母或数字开头"
-            get_image_tag
-            return
-        fi
-        
-        if [ ${#input_tag} -gt 128 ]; then
-            print_error "标签长度不能超过128个字符"
-            get_image_tag
-            return
-        fi
-        
-        IMAGE_TAG="$input_tag"
-        print_success "自定义标签: $IMAGE_TAG"
-    fi
+    print_info "请输入镜像标签 [latest]:"
+    read -p "标签: " input_tag
+    IMAGE_TAG=${input_tag:-latest}
 }
 
 get_image_info() {
     get_docker_username
     get_image_name
     get_image_tag
-    
     FULL_IMAGE_NAME="${DOCKER_USERNAME}/${IMAGE_NAME}:${IMAGE_TAG}"
-    
-    echo
-    print_info "镜像信息确认:"
-    echo -e "  Docker Hub用户名: ${GREEN}$DOCKER_USERNAME${NC}"
-    echo -e "  镜像名称: ${GREEN}$IMAGE_NAME${NC}"
-    echo -e "  镜像标签: ${GREEN}$IMAGE_TAG${NC}"
-    echo -e "  完整镜像名: ${GREEN}$FULL_IMAGE_NAME${NC}"
-    echo -e "  目标架构: ${GREEN}linux/amd64${NC}"
-    echo
-    
-    print_info "信息是否正确? (y/n)"
-    read -p "请确认: " confirm
-    
-    case $confirm in
-        [Yy]* )
-            print_success "镜像信息确认完成"
-            ;;
-        [Nn]* )
-            print_info "重新输入镜像信息"
-            get_image_info
-            ;;
-        * )
-            print_warning "无效选择，默认确认"
-            ;;
-    esac
+    print_info "配置完成: $FULL_IMAGE_NAME"
 }
 
 save_config() {
     local config_file=".docker-build-config"
-    
-    echo
-    print_info "是否保存配置以便下次使用? (y/n)"
-    read -p "请选择: " save_choice
-    
-    case $save_choice in
-        [Yy]* )
-            echo "DOCKER_USERNAME=$DOCKER_USERNAME" > "$config_file"
-            echo "IMAGE_NAME=$IMAGE_NAME" >> "$config_file"
-            echo "IMAGE_TAG=$IMAGE_TAG" >> "$config_file"
-            echo "TARGET_ARCH=$TARGET_ARCH" >> "$config_file"
-            print_success "配置已保存到 $config_file"
-            ;;
-        [Nn]* )
-            print_info "跳过保存配置"
-            ;;
-        * )
-            print_warning "无效选择，跳过保存"
-            ;;
-    esac
+    echo "DOCKER_USERNAME=$DOCKER_USERNAME" > "$config_file"
+    echo "IMAGE_NAME=$IMAGE_NAME" >> "$config_file"
+    echo "IMAGE_TAG=$IMAGE_TAG" >> "$config_file"
+    print_success "配置已保存"
 }
 
 load_config() {
     local config_file=".docker-build-config"
-    
     if [ -f "$config_file" ]; then
-        print_info "发现已保存的配置文件"
         source "$config_file"
-        
-        if [ -z "$IMAGE_TAG" ]; then
-            IMAGE_TAG="latest"
-        fi
-        
-        if [ -n "$DOCKER_USERNAME" ] && [ -n "$IMAGE_NAME" ]; then
-            FULL_IMAGE_NAME="${DOCKER_USERNAME}/${IMAGE_NAME}:${IMAGE_TAG}"
-            
-            echo
-            print_info "上次使用的配置:"
-            echo -e "  Docker Hub用户名: ${GREEN}$DOCKER_USERNAME${NC}"
-            echo -e "  镜像名称: ${GREEN}$IMAGE_NAME${NC}"
-            echo -e "  镜像标签: ${GREEN}$IMAGE_TAG${NC}"
-            echo -e "  完整镜像名: ${GREEN}$FULL_IMAGE_NAME${NC}"
-            echo -e "  目标架构: ${GREEN}$TARGET_ARCH${NC}"
-            echo
-            
-            print_info "是否使用上次的配置? (y/n)"
-            read -p "请选择: " use_saved
-            
-            case $use_saved in
-                [Yy]* )
-                    print_success "使用已保存的配置"
-                    return 0
-                    ;;
-                [Nn]* )
-                    print_info "重新输入配置"
-                    DOCKER_USERNAME=""
-                    IMAGE_NAME=""
-                    IMAGE_TAG="latest"
-                    FULL_IMAGE_NAME=""
-                    ;;
-                * )
-                    print_warning "无效选择，重新输入配置"
-                    DOCKER_USERNAME=""
-                    IMAGE_NAME=""
-                    IMAGE_TAG="latest"
-                    FULL_IMAGE_NAME=""
-                    ;;
-            esac
-        fi
+        FULL_IMAGE_NAME="${DOCKER_USERNAME}/${IMAGE_NAME}:${IMAGE_TAG}"
+        print_info "已加载配置: $FULL_IMAGE_NAME"
     fi
-    
-    return 1
 }
 
 push_to_dockerhub() {
-    echo
     print_info "是否要推送镜像到Docker Hub? (y/n)"
     read -p "请选择: " PUSH_CHOICE
-    
     case $PUSH_CHOICE in
-        [Yy]* )
-            build_docker_image
-            ;;
-        [Nn]* )
-            print_info "跳过推送到Docker Hub"
-            print_info "如需稍后推送，请使用以下命令:"
-            echo -e "${GREEN}cd $WORK_DIR/$BACKEND_PROJECT${NC}"
-            echo -e "${GREEN}docker buildx build --platform linux/amd64 --tag $FULL_IMAGE_NAME --push .${NC}"
-            ;;
-        * )
-            print_warning "无效选择，跳过推送"
-            ;;
+        [Yy]* ) build_docker_image ;;
     esac
 }
 
 cleanup() {
     print_info "清理临时文件..."
-    
-    echo
-    print_info "是否要清理构建过程中的临时文件? (y/n)"
-    read -p "请选择: " CLEANUP_CHOICE
-    
-    case $CLEANUP_CHOICE in
-        [Yy]* )
-            print_info "清理中..."
-            cd "$WORK_DIR" || return
-            
-            if [ -d "$FRONTEND_PROJECT" ]; then
-                rm -rf "$FRONTEND_PROJECT"
-                print_success "前端项目目录已清理"
-            fi
-            
-            if [ -d "$BACKEND_PROJECT" ]; then
-                rm -rf "$BACKEND_PROJECT"
-                print_success "后端项目目录已清理"
-            fi
-            
-            if [ -f ".docker-build-config" ]; then
-                rm -f ".docker-build-config"
-                print_success "配置文件已清理"
-            fi
-            
-            print_success "临时文件清理完成"
-            ;;
-        [Nn]* )
-            print_info "保留临时文件"
-            print_info "前端项目目录: $WORK_DIR/$FRONTEND_PROJECT"
-            print_info "后端项目目录: $WORK_DIR/$BACKEND_PROJECT"
-            ;;
-        * )
-            print_warning "无效选择，保留临时文件"
-            ;;
-    esac
+    rm -rf "$FRONTEND_PROJECT" "$BACKEND_PROJECT"
+    print_success "清理完成"
 }
 
 show_menu() {
     echo
     echo -e "${BLUE}=== Komari Docker 镜像构建脚本 ===${NC}"
-    echo -e "${YELLOW}工作目录: $WORK_DIR${NC}"
-    if [ -n "$DOCKER_USERNAME" ] && [ -n "$IMAGE_NAME" ] && [ -n "$IMAGE_TAG" ]; then
-        echo -e "${YELLOW}当前配置: $FULL_IMAGE_NAME${NC}"
-    else
-        echo -e "${YELLOW}尚未配置镜像信息${NC}"
-    fi
-    echo
-    echo "请选择操作:"
     echo "1) 完整构建流程 (推荐)"
     echo "2) 配置镜像信息"
-    echo "3) 仅构建前端静态文件"
+    echo "3) 仅构建前端"
     echo "4) 仅构建后端"
-    echo "5) 仅构建Docker镜像 (本地)"
+    echo "5) 仅构建Docker本地镜像"
     echo "6) 构建并推送Docker镜像"
-    echo "7) 仅推送到Docker Hub"
     echo "8) 清理临时文件"
-    echo "9) 重新配置Docker Buildx"
-    echo "10) 生成docker-compose.yml文件"
-    echo "11) 手动清理构建器"
-    echo "0) 退出 (自动清理构建器)"
+    echo "10) 生成docker-compose.yml"
+    echo "0) 退出"
     echo
 }
 
 main() {
-    echo -e "${GREEN}欢迎使用 Komari Docker 镜像构建脚本!${NC}"
-    echo
-    
-    if ! init_work_directory; then
-        print_error "工作目录初始化失败，退出脚本"
-        exit 1
-    fi
-    
+    init_work_directory
     check_requirements
     load_config
     
     while true; do
         show_menu
-        read -p "请输入选项 (0-11): " choice
-        
+        read -p "请输入选项: " choice
         case $choice in
             1)
-                print_info "开始完整构建流程..."
-                
-                if [ -z "$DOCKER_USERNAME" ] || [ -z "$IMAGE_NAME" ] || [ -z "$IMAGE_TAG" ]; then
-                    get_image_info
-                fi
-                
-                if ! build_frontend; then
-                    print_error "前端构建失败，停止构建流程"
-                    continue
-                fi
-                
-                if ! build_backend; then
-                    print_error "后端构建失败，停止构建流程"
-                    continue
-                fi
-                
-                if ! build_docker_image_local; then
-                    print_error "Docker镜像构建失败，停止构建流程"
-                    continue
-                fi
-                
-                push_to_dockerhub
-                save_config
-                generate_docker_compose
-                cleanup
-                
-                echo
-                print_success "完整构建流程完成！"
-                print_info "您可以继续使用其他功能或选择0退出"
+                if [ -z "$DOCKER_USERNAME" ]; then get_image_info; fi
+                build_frontend && build_backend && build_docker_image_local && push_to_dockerhub && save_config && generate_docker_compose && cleanup
                 ;;
-            2)
-                get_image_info
-                ;;
-            3)
-                if build_frontend; then
-                    print_success "前端静态文件构建完成！"
-                    print_info "构建结果位于: $WORK_DIR/$FRONTEND_PROJECT/dist"
-                else
-                    print_error "前端构建失败！"
-                fi
-                ;;
-            4)
-                if build_backend; then
-                    print_success "后端构建完成！"
-                    print_info "构建结果位于: $WORK_DIR/$BACKEND_PROJECT"
-                else
-                    print_error "后端构建失败！"
-                fi
-                ;;
-            5)
-                if [ -z "$DOCKER_USERNAME" ] || [ -z "$IMAGE_NAME" ] || [ -z "$IMAGE_TAG" ]; then
-                    get_image_info
-                fi
-                if build_docker_image_local; then
-                    print_success "Docker镜像构建完成！"
-                else
-                    print_error "Docker镜像构建失败！"
-                fi
-                ;;
-            6)
-                if [ -z "$DOCKER_USERNAME" ] || [ -z "$IMAGE_NAME" ] || [ -z "$IMAGE_TAG" ]; then
-                    get_image_info
-                fi
-                if build_docker_image; then
-                    print_success "Docker镜像构建并推送完成！"
-                else
-                    print_error "Docker镜像构建失败！"
-                fi
-                ;;
-            7)
-                if [ -z "$DOCKER_USERNAME" ] || [ -z "$IMAGE_NAME" ] || [ -z "$IMAGE_TAG" ]; then
-                    get_image_info
-                fi
-                push_to_dockerhub
-                ;;
-            8)
-                cleanup
-                ;;
-            9)
-                print_info "重新配置Docker Buildx..."
-                cleanup_builder  # 先清理旧的
-                check_docker_buildx  # 重新创建
-                if [ "$BUILDER_CREATED" = true ]; then
-                    print_success "Docker Buildx重新配置完成！"
-                else
-                    print_error "Docker Buildx配置失败！"
-                fi
-                ;;
-            10)
-                if [ -z "$DOCKER_USERNAME" ] || [ -z "$IMAGE_NAME" ] || [ -z "$IMAGE_TAG" ]; then
-                    get_image_info
-                fi
-                if generate_docker_compose; then
-                    print_success "docker-compose.yml文件生成完成！"
-                else
-                    print_error "docker-compose.yml文件生成失败！"
-                fi
-                ;;
-            11)
-                print_info "手动清理构建器..."
-                cleanup_builder
-                print_success "构建器清理完成！"
-                ;;
-            0)
-                print_info "正在退出脚本..."
-                # EXIT trap 会自动调用 cleanup_on_exit
-                exit 0
-                ;;
-            *)
-                print_error "无效选项，请重新选择"
-                ;;
+            2) get_image_info ;;
+            3) build_frontend ;;
+            4) build_backend ;;
+            5) if [ -z "$DOCKER_USERNAME" ]; then get_image_info; fi; build_docker_image_local ;;
+            6) if [ -z "$DOCKER_USERNAME" ]; then get_image_info; fi; build_docker_image ;;
+            8) cleanup ;;
+            10) generate_docker_compose ;;
+            0) exit 0 ;;
+            *) print_error "无效选项" ;;
         esac
-        
-        echo
-        read -p "按回车键继续..."
-    done
+    已完成
 }
 
 main "$@"
