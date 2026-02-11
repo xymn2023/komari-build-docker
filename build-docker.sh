@@ -618,22 +618,32 @@ EOF
     print_success "docker-compose.yml文件生成成功"
 }
 
+# --- 修改后的 get_docker_username 函数 ---
 get_docker_username() {
     echo
     print_info "请输入您的Docker Hub用户名:"
-    read -p "Docker Hub用户名: " DOCKER_USERNAME
-    if [ -z "$DOCKER_USERNAME" ]; then
-        get_docker_username
-    fi
+    while true; do # 使用循环直到输入有效用户名
+        read -p "Docker Hub用户名: " DOCKER_USERNAME
+        if [ -n "$DOCKER_USERNAME" ]; then # 检查用户名是否为空
+            break # 如果不为空，则跳出循环
+        else
+            print_warning "Docker Hub用户名不能为空，请重新输入。"
+        fi
+    done
 }
 
+# --- 修改后的 get_image_name 函数 ---
 get_image_name() {
     echo
     print_info "请输入Docker镜像名称:"
-    read -p "镜像名称: " IMAGE_NAME
-    if [ -z "$IMAGE_NAME" ]; then
-        get_image_name
-    fi
+    while true; do # 使用循环直到输入有效镜像名称
+        read -p "镜像名称: " IMAGE_NAME
+        if [ -n "$IMAGE_NAME" ]; then # 检查镜像名称是否为空
+            break # 如果不为空，则跳出循环
+        else
+            print_warning "Docker镜像名称不能为空，请重新输入。"
+        fi
+    done
 }
 
 get_image_tag() {
@@ -759,7 +769,7 @@ main() {
                 print_error "无效选项: $choice"
                 ;;
         esac
-    已完成
+    done
 }
 
 # 启动脚本
