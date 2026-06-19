@@ -300,7 +300,7 @@ check_docker_buildx() {
 create_buildx_builder() {
     print_info "创建Docker Buildx构建器: $BUILDX_BUILDER (AMD64)"
     
-    # 创建新的构建器，指定平台为linux/amd64
+    # 创建新的构建器，指定 platform 为 linux/amd64
     if docker buildx create \
         --name "$BUILDX_BUILDER" \
         --driver docker-container \
@@ -406,19 +406,18 @@ build_backend() {
     fi
     
     # 按照 Go 嵌入指令的要求，将前端静态文件复制到后端项目的 web/public/defaultTheme/dist 目录
-    # 修正路径：在前面加上了 web/ 路径
     print_info "复制前端静态文件到后端项目的/web/public/defaultTheme/dist目录..."
-    mkdir -p web/public/defaultTheme/dist # <-- 重点：修正路径，增加了 web/
+    mkdir -p web/public/defaultTheme/dist
     
     # 清空目标目录，防止旧文件干扰
-    if [ "$(ls -A web/public/defaultTheme/dist)" ]; then # <-- 修正路径，增加了 web/
+    if [ "$(ls -A web/public/defaultTheme/dist)" ]; then
         print_warning "web/public/defaultTheme/dist 目录非空，正在清理..."
-        rm -rf web/public/defaultTheme/dist/* # <-- 修正路径，增加了 web/
+        rm -rf web/public/defaultTheme/dist/*
     fi
 
     if [ -d "$WORK_DIR/$FRONTEND_PROJECT/dist" ]; then
         # 将前端项目 dist 目录下的所有内容复制到 .../defaultTheme/dist/
-        if cp -r "$WORK_DIR/$FRONTEND_PROJECT/dist"/* web/public/defaultTheme/dist/; then # <-- 修正路径，增加了 web/
+        if cp -r "$WORK_DIR/$FRONTEND_PROJECT/dist"/* web/public/defaultTheme/dist/; then
             print_success "前端静态文件复制成功到 web/public/defaultTheme/dist"
         else
             print_error "前端静态文件复制失败"
@@ -777,7 +776,7 @@ main() {
             *)
                 print_error "无效选项: $choice"
                 ;;
-         Welsh esac
+        esac
     done
 }
 
