@@ -405,21 +405,21 @@ build_backend() {
         return 1
     fi
     
-    # 按照 Go 嵌入指令的要求，将前端静态文件复制到后端项目的 public/defaultTheme/dist 目录
-    # 注意：这里我们创建了 defaultTheme/dist 子目录
-    print_info "复制前端静态文件到后端项目的/public/defaultTheme/dist目录..."
-    mkdir -p public/defaultTheme/dist # <-- 重点：在这里创建了 'dist' 子目录
+    # 按照 Go 嵌入指令的要求，将前端静态文件复制到后端项目的 web/public/defaultTheme/dist 目录
+    # 修正路径：在前面加上了 web/ 路径
+    print_info "复制前端静态文件到后端项目的/web/public/defaultTheme/dist目录..."
+    mkdir -p web/public/defaultTheme/dist # <-- 重点：修正路径，增加了 web/
     
     # 清空目标目录，防止旧文件干扰
-    if [ "$(ls -A public/defaultTheme/dist)" ]; then # <-- 也要检查 dist 目录
-        print_warning "public/defaultTheme/dist 目录非空，正在清理..."
-        rm -rf public/defaultTheme/dist/* # <-- 清理 dist 目录
+    if [ "$(ls -A web/public/defaultTheme/dist)" ]; then # <-- 修正路径，增加了 web/
+        print_warning "web/public/defaultTheme/dist 目录非空，正在清理..."
+        rm -rf web/public/defaultTheme/dist/* # <-- 修正路径，增加了 web/
     fi
 
     if [ -d "$WORK_DIR/$FRONTEND_PROJECT/dist" ]; then
         # 将前端项目 dist 目录下的所有内容复制到 .../defaultTheme/dist/
-        if cp -r "$WORK_DIR/$FRONTEND_PROJECT/dist"/* public/defaultTheme/dist/; then
-            print_success "前端静态文件复制成功到 public/defaultTheme/dist"
+        if cp -r "$WORK_DIR/$FRONTEND_PROJECT/dist"/* web/public/defaultTheme/dist/; then # <-- 修正路径，增加了 web/
+            print_success "前端静态文件复制成功到 web/public/defaultTheme/dist"
         else
             print_error "前端静态文件复制失败"
             return 1
@@ -538,7 +538,7 @@ EOF
 }
 
 build_docker_image_local() {
-    print_info "=== 步骤3: 构建Docker镜像 (AMD64) ==-"
+    print_info "=== 步骤3: 构建Docker镜像 (AMD64) ==="
     
     cd "$WORK_DIR/$BACKEND_PROJECT" || {
         print_error "无法进入后端项目目录"
@@ -777,7 +777,7 @@ main() {
             *)
                 print_error "无效选项: $choice"
                 ;;
-        esac
+         Welsh esac
     done
 }
 
