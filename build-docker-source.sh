@@ -5,7 +5,7 @@
 # 按官方指南执行 npm install/build、tar、zstd、复制主题元数据、Go 编译。
 # 编译工具在 Docker 中安装，无需在宿主机安装 Go/Node.js/zstd/GCC。
 # 后端自动获取最新正式 Release 标签；前端使用官方默认分支；构建前重新克隆。
-# 退出清理本工作区源码、本次专用 BuildKit 缓存及临时产物；保留最终结果和配置。
+# 退出清理本工作区源码及临时产物；保留受限 BuildKit 缓存供下次构建复用。
 set -u
 set -o pipefail
 umask 077
@@ -19,8 +19,7 @@ TEST_CONTAINER=""
 BUILT_IMAGE=""
 PLATFORMS="linux/amd64,linux/arm64"
 OUTPUT_MODE="oci"
-BUILDER="komari-source-session-$$-$RANDOM"
-BUILDER_CREATED=false
+BUILDER="komari-source-cache-v1"
 LOCK_OWNED=false
 TEMP_IMAGE=""
 PARTIAL_EXPORT=""
@@ -28,7 +27,7 @@ GO_IMAGE="${KOMARI_GO_IMAGE:-}"
 RUNTIME_IMAGE="${KOMARI_RUNTIME_IMAGE:-alpine:3.21}"
 NODE_IMAGE="${KOMARI_NODE_IMAGE:-node:22-bookworm-slim}"
 # 自定义 Go 镜像必须含 Go 和 apk；运行镜像必须支持 apk。
-# 使用本次专用 docker-container 构建器，退出时删除，避免残留构建缓存。
+# 专用持久构建器复用依赖与编译缓存，GC 控制磁盘占用。
 log() { printf '[%s] %s\n' "$1" "$2"; }
 info() { log INFO "$*"; }
 ok() { log SUCCESS "$*"; }
@@ -61,17 +60,12 @@ cleanup_exit() {
     if [[ -n "$PARTIAL_EXPORT" ]]; then
         rm -f -- "$PARTIAL_EXPORT" || failed=1
     fi
-    if [[ "$BUILDER_CREATED" == true ]]; then
-        info '正在删除本次专用构建器及其构建缓存...'
-        if docker buildx rm --force "$BUILDER"; then BUILDER_CREATED=false
-        else warn "构建器清理失败，可稍后执行：docker buildx rm --force $BUILDER"; failed=1; fi
-    fi
     clean_sources || failed=1
     rm -f -- "$ROOT/settings.conf.tmp" || failed=1
     rmdir "$ROOT/run.lock" 2>/dev/null || failed=1
     LOCK_OWNED=false
     if [[ "$failed" == 0 ]]; then
-        ok '清理完成；最终镜像、完整导出包、配置和 Compose 已保留'
+        ok '清理完成；最终镜像、导出包、配置及受限构建缓存已保留'
     else warn '部分清理未完成，请查看上方提示'; fi
 }
 trap cleanup_exit EXIT
@@ -122,13 +116,31 @@ check_docker() {
 }
 setup_builder() {
     check_docker || return 1
-    if [[ "$BUILDER_CREATED" != true ]]; then
-        # 不复用或删除其他构建器，避免清理影响其他项目。
-        while docker buildx inspect "$BUILDER" >/dev/null 2>&1; do
-            BUILDER="komari-source-session-$$-$RANDOM"
-        done
-        docker buildx create --name "$BUILDER" --driver docker-container || return 1
-        BUILDER_CREATED=true
+    if ! docker buildx inspect "$BUILDER" >/dev/null 2>&1; then
+        cat > "$ROOT/buildkitd.toml" <<'BUILDKIT'
+[worker.oci]
+  gc = true
+  reservedSpace = "3GB"
+  maxUsedSpace = "20GB"
+  minFreeSpace = "25GB"
+  max-parallelism = 2
+  [[worker.oci.gcpolicy]]
+    filters = ["type==source.local", "type==exec.cachemount", "type==source.git.checkout"]
+    keepDuration = "168h"
+    maxUsedSpace = "8GB"
+  [[worker.oci.gcpolicy]]
+    all = true
+    reservedSpace = "3GB"
+    maxUsedSpace = "20GB"
+    minFreeSpace = "25GB"
+BUILDKIT
+        docker buildx create --name "$BUILDER" --driver docker-container \
+            --buildkitd-config "$ROOT/buildkitd.toml" || return 1
+    else
+        [[ "$(docker buildx inspect "$BUILDER" | sed -n 's/^Driver:[[:space:]]*//p' | head -n 1)" == docker-container ]] || {
+            err "同名构建器 $BUILDER 不是 docker-container，停止以免误用"; return 1;
+        }
+        info "复用构建器及缓存：$BUILDER"
     fi
     docker buildx inspect --bootstrap "$BUILDER" || return 1
 }
@@ -396,11 +408,12 @@ ARG RUNTIME_IMAGE=alpine:3.21
 ARG NODE_IMAGE=node:22-bookworm-slim
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS frontend
 WORKDIR /src/komari-web
-COPY komari-web/ ./
+COPY komari-web/package.json komari-web/package-lock.json ./
 RUN node --version && npm --version
-RUN test -s package-lock.json || { echo '[ERROR] 前端仓库缺少 package-lock.json'; exit 1; }
-RUN npm ci --include=dev --no-audit --no-fund --loglevel=verbose \
+RUN --mount=type=cache,id=komari-npm,target=/root/.npm \
+    npm ci --include=dev --no-audit --no-fund --loglevel=error \
     || { rc=$?; echo "[ERROR] npm 依赖安装失败，退出码 $rc"; cat /root/.npm/_logs/*debug* 2>/dev/null || true; exit "$rc"; }
+COPY komari-web/ ./
 RUN npm run build \
     || { rc=$?; echo "[ERROR] 前端编译失败，退出码 $rc；请查看上方 TypeScript/Vite 错误"; exit "$rc"; }
 RUN test -s dist/index.html || { echo '[ERROR] 前端构建后缺少 dist/index.html'; exit 1; }
@@ -409,6 +422,9 @@ RUN test -s komari-theme.json || { echo '[ERROR] 前端仓库缺少 komari-theme
 FROM ${GO_IMAGE} AS backend
 RUN apk add --no-cache gcc musl-dev linux-headers tar zstd ca-certificates git
 WORKDIR /src/komari
+COPY komari/go.mod komari/go.sum ./
+RUN --mount=type=cache,id=komari-go-mod,target=/go/pkg/mod \
+    go mod download
 COPY komari/ ./
 COPY --from=frontend /src/komari-web/dist/ /tmp/frontend-dist/
 COPY --from=frontend /src/komari-web/komari-theme.json /tmp/komari-theme.json
@@ -428,7 +444,9 @@ ARG TARGETOS
 ARG TARGETARCH
 ENV CGO_ENABLED=1 GOOS=${TARGETOS} GOARCH=${TARGETARCH}
 # 在 musl 环境静态链接，避免宿主机 glibc 与运行镜像版本不一致。
-RUN mkdir -p /out \
+RUN --mount=type=cache,id=komari-go-mod,target=/go/pkg/mod \
+    --mount=type=cache,id=komari-go-build-${TARGETARCH},target=/root/.cache/go-build \
+    mkdir -p /out \
     && go build -trimpath -ldflags="-s -w -linkmode external -extldflags '-static' -X github.com/komari-monitor/komari/utils.CurrentVersion=${KOMARI_VERSION} -X github.com/komari-monitor/komari/utils.VersionHash=${KOMARI_SHORT_HASH}" -o /out/komari .
 
 FROM ${RUNTIME_IMAGE} AS runtime
@@ -474,7 +492,7 @@ build_target() {
     # 在启动 BuildKit 前确认正式版和源码，避免获取失败时反复创建构建器。
     check_docker && prepare_sources && load_sources && write_source_dockerfile && setup_builder || return 1
     show_summary "$target"
-    preflight || return 1
+    # 真实构建自身会执行各阶段与目标架构启动检查，无须额外运行六次构建预检。
     if [[ "$target" != runtime ]]; then
         output_args=(--output type=cacheonly)
     else
@@ -533,6 +551,17 @@ build_target() {
 build_frontend() { OUTPUT_MODE=cache; build_target frontend; }
 build_backend() { OUTPUT_MODE=cache; build_target backend; }
 build_image() { choose_output && prompt_image_info && build_target runtime; }
+clear_build_cache() {
+    local answer
+    check_docker || return 1
+    if ! docker buildx inspect "$BUILDER" >/dev/null 2>&1; then
+        info '当前没有本项目的构建器缓存'; return 0
+    fi
+    read -r -p "删除 $BUILDER 及其缓存？下次构建需重新编译依赖。[y/N]: " answer || return 1
+    [[ "$answer" == y || "$answer" == Y ]] || { info '已取消缓存清理'; return 0; }
+    docker buildx rm --force "$BUILDER" || return 1
+    ok '本项目构建缓存已清理'
+}
 full_build() {
     choose_output && prompt_image_info && build_target runtime
 }
@@ -554,9 +583,9 @@ main() {
     fi
     local choice status
     while true; do
-        printf '\n=== Komari Docker 构建助手 v4.2 · AMD64/ARM64 源码构建版 ===\n'
+        printf '\n=== Komari Docker 构建助手 v4.3 · AMD64/ARM64 源码构建版 ===\n'
         printf '后端：%s | 前端：%s\n目标架构：%s\n镜像：%s\n' "$BACKEND_REF" "$FRONTEND_REF" "$PLATFORMS" "$IMAGE"
-        printf '1) 完整流程：获取新源码、编译、制作镜像、验证\n2) 配置镜像及 GitHub 加速（版本自动获取）\n3) 重新拉取源码并构建前端\n4) 重新拉取源码并构建后端\n5) 重新拉取源码并构建镜像\n6) 重新拉取源码并构建、推送多架构镜像\n7) 清理旧源码并重新拉取\n8) 选择目标架构\n10) 生成 docker-compose.yml\n0) 退出\n\n'
+        printf '1) 完整流程：获取新源码、编译、制作镜像、验证\n2) 配置镜像及 GitHub 加速（版本自动获取）\n3) 重新拉取源码并构建前端\n4) 重新拉取源码并构建后端\n5) 重新拉取源码并构建镜像\n6) 重新拉取源码并构建、推送多架构镜像\n7) 清理旧源码并重新拉取\n8) 选择目标架构\n9) 清理本项目构建缓存\n10) 生成 docker-compose.yml\n0) 退出\n\n'
         read -r -p '请输入选项: ' choice || break
         status=0
         case "$choice" in
@@ -568,6 +597,7 @@ main() {
             6) push_image || status=$? ;;
             7) prepare_sources || status=$? ;;
             8) select_platforms || status=$? ;;
+            9) clear_build_cache || status=$? ;;
             10) generate_compose || status=$? ;;
             0) if [[ -t 1 && -n "${TERM:-}" ]]; then clear 2>/dev/null || true; fi; break ;;
             *) warn '无效选项'; continue ;;
