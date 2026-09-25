@@ -310,19 +310,37 @@ clone_repo() {
 }
 get_official_release() {
     command -v curl >/dev/null 2>&1 || { err '请安装 curl 和 ca-certificates 后重试'; return 1; }
-    local effective="" url=https://github.com/komari-monitor/komari/releases/latest
+    local effective="" response="" tag="" api=https://api.github.com/repos/komari-monitor/komari/releases/latest
+    local url=https://github.com/komari-monitor/komari/releases/latest
     info '正在获取官方最新正式 Release 版本号...'
-    effective=$(curl -fsSL --retry 2 --connect-timeout 20 --max-time 90 \
-        --proto '=https' --proto-redir '=https' -o /dev/null -w '%{url_effective}' "$url") || effective=""
-    if [[ "$effective" != */releases/tag/* && -n "$PROXY" ]]; then
-        effective=$(curl -fsSL --retry 2 --connect-timeout 20 --max-time 90 \
-            --proto '=https' --proto-redir '=https' -o /dev/null -w '%{url_effective}' "${PROXY}${url}") || effective=""
+    # API /releases/latest 只返回正式版。只接受官方返回的 tag_name。
+    if response=$(curl -fsSL --retry 2 --retry-all-errors --connect-timeout 20 --max-time 90 \
+        --proto '=https' --proto-redir '=https' -H 'Accept: application/vnd.github+json' \
+        "$api"); then
+        tag=$(printf '%s\n' "$response" | sed -n 's/^[[:space:]]*"tag_name":[[:space:]]*"\([A-Za-z0-9][A-Za-z0-9._-]*\)".*/\1/p' | head -n 1)
+    else
+        warn 'GitHub API 直连失败'
     fi
-    [[ "$effective" == */komari-monitor/komari/releases/tag/* ]] || {
-        err '无法解析官方最新正式版，已停止；不会使用 main 冒充正式版'; return 1;
+    if [[ -z "$tag" && -n "$PROXY" ]]; then
+        info '使用已配置的 GitHub 加速前缀重试官方 API'
+        if response=$(curl -fsSL --retry 2 --retry-all-errors --connect-timeout 20 --max-time 90 \
+            --proto '=https' --proto-redir '=https' -H 'Accept: application/vnd.github+json' \
+            "${PROXY}${api}"); then
+            tag=$(printf '%s\n' "$response" | sed -n 's/^[[:space:]]*"tag_name":[[:space:]]*"\([A-Za-z0-9][A-Za-z0-9._-]*\)".*/\1/p' | head -n 1)
+        fi
+    fi
+    if [[ -z "$tag" ]]; then
+        warn 'API 未返回正式版标签，尝试官方 Release 页面'
+        effective=$(curl -fsSL --retry 2 --retry-all-errors --connect-timeout 20 --max-time 90 \
+            --proto '=https' --proto-redir '=https' -o /dev/null -w '%{url_effective}' "$url") || effective=""
+        if [[ "$effective" == https://github.com/komari-monitor/komari/releases/tag/* ]]; then
+            tag=${effective##*/}
+        fi
+    fi
+    [[ "$tag" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
+        err 'GitHub API 与官方 Release 页面均未返回有效正式版标签；已停止构建'; return 1;
     }
-    OFFICIAL_TAG=${effective##*/}
-    [[ "$OFFICIAL_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { err '官方版本号格式无效'; return 1; }
+    OFFICIAL_TAG="$tag"
     ok "官方最新版本：$OFFICIAL_TAG"
 }
 prepare_sources() {
@@ -380,7 +398,8 @@ FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS frontend
 WORKDIR /src/komari-web
 COPY komari-web/ ./
 RUN node --version && npm --version
-RUN npm install --include=dev --no-audit --no-fund --loglevel=verbose \
+RUN test -s package-lock.json || { echo '[ERROR] 前端仓库缺少 package-lock.json'; exit 1; }
+RUN npm ci --include=dev --no-audit --no-fund --loglevel=verbose \
     || { rc=$?; echo "[ERROR] npm 依赖安装失败，退出码 $rc"; cat /root/.npm/_logs/*debug* 2>/dev/null || true; exit "$rc"; }
 RUN npm run build \
     || { rc=$?; echo "[ERROR] 前端编译失败，退出码 $rc；请查看上方 TypeScript/Vite 错误"; exit "$rc"; }
@@ -452,7 +471,8 @@ build_target() {
     local target="$1" out="" temp_tag="komari-multi-check:run-$$-$RANDOM"
     local -a output_args=()
     valid_platforms "$PLATFORMS" || { err '架构配置无效'; return 1; }
-    setup_builder && prepare_sources && load_sources && write_source_dockerfile || return 1
+    # 在启动 BuildKit 前确认正式版和源码，避免获取失败时反复创建构建器。
+    check_docker && prepare_sources && load_sources && write_source_dockerfile && setup_builder || return 1
     show_summary "$target"
     preflight || return 1
     if [[ "$target" != runtime ]]; then
